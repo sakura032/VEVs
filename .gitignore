@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Python virtual environments
+venv/
+env/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS system files
+.DS_Store
+
+# Windows system files
+Thumbs.db
+
+# Log files
+*.log
+
+# Package distribution files若创建了 Python 包并使用 setuptools 或 distutils
+*.egg
+*.egg-info
+dist/
+build/
+
+scripts/
