@@ -1096,7 +1096,7 @@ Route A 的价值不是“够用”，而是它能用更小的系统先验证以
 ## 11.3 `UmbrellaSampling` → `UmbrellaSamplingWorkflow`
 
 ### 当前问题
-- 只是窗口数组 + 随机采样 + 解析 PMF 曲线。fileciteturn2file1
+- 只是窗口数组 + 随机采样 + 解析 PMF 曲线。
 
 ### 重构后角色
 - 路径分辨自由能工作流
@@ -1119,10 +1119,10 @@ Route A 的价值不是“够用”，而是它能用更小的系统先验证以
 ### 当前优点
 - 类职责清晰
 - 可读取 `trajectory + topology`
-- 分析项覆盖厚度、曲率、有序度、脂筏、蛋白-膜相互作用。fileciteturn2file2turn2file10
+- 分析项覆盖厚度、曲率、有序度、脂筏、蛋白-膜相互作用。
 
 ### 当前不足
-- 多数输出仍是随机示例值。fileciteturn2file5turn2file6turn2file7
+- 多数输出仍是随机示例值。
 
 ### 重构后角色
 - 真实膜结构分析器
@@ -1135,7 +1135,7 @@ Route A 的价值不是“够用”，而是它能用更小的系统先验证以
 
 ## 12. 当前阶段最优先的开发顺序（Priority Order）
 
-### P0：先冻结接口与文档
+### P0：先冻结接口与文档    
 - 类图
 - 时序图
 - I/O contract

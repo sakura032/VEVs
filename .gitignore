@@ -29,4 +29,6 @@ Thumbs.db
 dist/
 build/
 
-scripts/
+work/
+data/test_systems/minimal_complex/minimal_complex_clean.pdb
+
