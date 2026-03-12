@@ -1,125 +1,213 @@
-# VEVs 项目进度说明（用于对外同步）
+# VEVs 项目状态说明（实时快照）
 
-更新时间：2026-03-09
+更新时间：2026-03-12  
+适用对象：第一次接触本仓库的新协作者（算法/接口实现同学）
 
-## 1. 项目目标（按 `casetwo.md`）
-本项目围绕案例二（integrin-mediated targeting recognition）推进分层架构落地，核心目标是先打通 Route A（solution mode）的最小可运行闭环，再逐步扩展到膜环境与自由能高级流程。
+---
 
-当前工程已明确分层方向：
-- 配置层：`src/configs/`
-- 契约层：`src/interfaces/contracts.py`
-- 执行层：`src/models/all_atom/simulation_runner.py`
-- 工作流层：`src/models/workflows/binding_workflow.py`
-- 验证入口：`scripts/run_minimal_openmm_validation.py`
+## 1. 当前项目到底到哪一步了
 
-## 2. 当前代码成果（已完成）
-### 2.1 AA-MD 执行主链已落地
-`AllAtomSimulation` 已具备真实 OpenMM 主链：
-- `prepare_system()`
-- `minimize()`
-- `equilibrate()`
-- `production()`
-- `run_full_protocol()`
+本仓库已经从“骨架阶段”进入“Route A 最小闭环可运行阶段”：
 
-关键能力：
-- 支持 force field 与 water model 映射
-- 支持 CPU/CUDA/OpenCL 平台选择（当前验证使用 CPU）
-- 支持 NVT/NPT（含 barostat）
-- 产出标准 artifacts（`system.xml`、`production.dcd`、`final_state.xml` 等）
+- 已有可运行链路：`validate -> preprocess -> dock -> assemble -> AA-MD -> analyze -> summarize`
+- 已接入 OpenMM 主链（`prepare_system -> minimize -> equilibrate -> production`）
+- 当前只支持：`CPU`、`solution mode`、`placeholder docking`
+- 当前定位是 **engine/workflow validation**，不是最终 scientific validation
 
-### 2.2 最小可运行验证入口已完成
-新增脚本：`scripts/run_minimal_openmm_validation.py`
+结论：工程链路可跑通，科研级方法（真实 docking backend / endpoint FE / membrane / umbrella）尚未完成。
 
-脚本定位：
-- engine validation（引擎链路验证）
-- 不经过 `BindingWorkflow`
-- 直接调用 `AllAtomSimulation.run_full_protocol(...)`
-- 固定为 solution mode + CPU
+---
 
-输入处理：
-- 使用 `data/test_systems/minimal_complex/minimal_complex.pdb`
-- 增加最小预清洗函数 `prepare_clean_test_input(...)`（`pdbfixer`）
-- 生成 `minimal_complex_clean.pdb` 后用于装配与模拟
+## 2. 代码分层（对齐 casetwo.md）
 
-### 2.3 闭环产物已生成
-当前 `work/md/` 目录下已有完整最小闭环输出：
-- `system.xml`
-- `state_init.xml`
-- `minimized.pdb`
-- `equil_nvt_last.pdb`
-- `equil_npt_last.pdb`
-- `production.dcd`
-- `md_log.csv`
-- `production.chk`
-- `final_state.xml`
+```text
+src/
+├─ configs/                    # 配置层 dataclass + validate
+├─ interfaces/contracts.py     # 数据契约 + Protocol 接口
+├─ models/
+│  ├─ workflows/               # 编排层（BindingWorkflow）
+│  ├─ all_atom/                # 执行层（AllAtomSimulation）
+│  └─ docking/                 # placeholder docking + scoring + validation
+├─ utils/                      # repository / preprocessor / assembler
+└─ analysis/                   # BindingAnalyzer
+```
 
-这说明 `prepare_system -> minimize -> equilibrate -> production` 链路已被实际跑通。
+### 2.1 配置层（`src/configs/`）
 
-## 3. 对照 `casetwo.md` 的完成情况
-### Phase 0（架构与契约冻结）
-状态：大体完成
+- `SystemConfig`：输入结构路径、力场、水模型、温压、pH、是否 membrane
+- `MDConfig`：平台、积分参数、最小化/平衡/生产时长与输出频率
+- `DockingConfig`：backend、pose 数、seed、cutoff
+- `EndpointFreeEnergyConfig` / `UmbrellaSamplingConfig`：已定义，当前 Route A 未真正实现
+- `MembraneConfig`：已定义，当前 Route A 不启用
 
-已完成项：
-- 配置 dataclass 已建立（`SystemConfig`、`MDConfig`、`MembraneConfig` 等）
-- 核心数据契约与 Protocol 已定义（`contracts.py`）
-- 工作流与执行器职责已分离（`BindingWorkflow` vs `AllAtomSimulation`）
+### 2.2 契约层（`src/interfaces/contracts.py`）
 
-未完成项：
-- 目录与模块仍是最小实现，尚未扩展为 `casetwo.md` 中完整分层文件集（如独立 builder/protocol/reporters 模块）
+统一了关键 I/O 对象：
 
-### Phase 1（Route A 最小可运行闭环）
-状态：关键目标已完成，workflow 侧仍待补齐
+- `InputManifest`
+- `PreparedStructures`
+- `DockingPose` / `DockingResult`
+- `AssembledComplex`
+- `SimulationArtifacts`
+- `BindingWorkflowResult`
 
-已完成项：
-- AA-MD 主链真实执行
-- 最小输入可运行验证脚本
-- artifacts 文件落地与轨迹基本 sanity check 支持
+并定义了 Protocol 接口（repository/preprocessor/docking/assembler/runner/analyzer）。
 
-未完成项：
-- `BindingWorkflow` 依赖的 concrete 组件仍缺实现（repository/preprocessor/docking/assembler/analyzer）
-- 暂无 Route A 端到端“科学工作流”正式入口脚本
+### 2.3 编排层（`src/models/workflows/binding_workflow.py`）
 
-### Phase 2（membrane-ready 平台化）
-状态：部分就绪
+`BindingWorkflow` 负责 orchestration，不承载 OpenMM 细节。
 
-已完成项：
-- `MembraneConfig` 已定义，接口保留扩展位
+当前 `run()` 顺序：
 
-未完成项：
-- `simulation_runner.py` 仍仅支持 `solution` 模式（`membrane` 路径未实现）
-- 协议分支（solution/membrane）未拆分
+1. `build_manifest`
+2. `validate_inputs`
+3. `prepare_inputs`
+4. `dock`
+5. `rank_poses`
+6. `select_pose`
+7. `build_complex`
+8. `run_refinement_md`
+9. `analyze`（可选）
+10. `summarize`
 
-### Phase 3（Route B 膜环境）
-状态：未开始
+`summarize()` 当前还会写出：
 
-### Phase 4（Umbrella Sampling）
-状态：未开始
+- `outputs/runs/<run_id>/metadata/run_manifest.json`
+- `outputs/runs/<run_id>/reports/route_a_summary.md`
 
-## 4. 现阶段结论
-项目已从“纯概念骨架”进入“可运行执行核心”阶段。  
-简言之：引擎主链可跑，工作流全链路尚未跑通。
+### 2.4 执行层（`src/models/all_atom/simulation_runner.py`）
 
-## 5. 下一步规划（建议执行顺序）
-1. 补齐 Route A 的最小 concrete 组件
-- `StructureRepository`（输入校验）
-- `StructurePreprocessor`（最小结构预处理）
-- `DockingEngine`（可复现占位或接入真实 backend）
-- `ComplexAssembler`（solution 模式组装）
-- `BindingAnalyzer`（最小轨迹指标）
+`AllAtomSimulation` 已实现完整主链：
 
-2. 打通 `BindingWorkflow.run()` 的端到端
-- 从输入 manifest 到 `simulation artifacts` 再到结果汇总
+- `prepare_system`
+- `minimize`
+- `equilibrate`
+- `production`
+- `run_full_protocol`
 
-3. 在 Route A 稳定后做 membrane-ready 升级
-- 引入 mode 分支与 membrane protocol 接口
-- 保持 `AllAtomSimulation` 为唯一 MD 执行核心
+已输出标准 MD artifacts（`system.xml`, `state_init.xml`, `production.dcd`, `md_log.csv`, ...）。
 
-4. 最后再做 Route B 与 Umbrella Sampling
-- 避免在执行层未稳定时提前引入高复杂度模块
+### 2.5 工具层与分析层
 
-## 6. 对外同步可直接使用的摘要
-可以对外描述为：
-- 架构层面已完成配置/契约/执行器/工作流骨架分离
-- OpenMM 核心执行链路已真实跑通并产出轨迹
-- 当前处于“Phase 1 后半段”：引擎完成，workflow concrete 实现待补齐
-- 后续按 `casetwo.md` 先 Route A 完整化，再升级 membrane，再做 umbrella sampling
+- `StructureRepository`：输入文件校验，支持 manifest 导出（哈希、大小、mtime）
+- `StructurePreprocessor`：基于 `pdbfixer` 最小清洗（当前 `.pdb`）
+- `ComplexAssembler`：兼容 placeholder pose 输出组装 `complex_initial.pdb`
+- `BindingAnalyzer`：
+  - 优先 trajectory 分析（MDAnalysis RMSD）
+  - 无法分析时 fallback 到 log 诊断图
+  - 输出 `metrics.json` + `csv` + `png`
+
+### 2.6 Docking 层（`src/models/docking/`）
+
+- `PlaceholderDockingEngine`：固定 seed、可重复、CPU 友好
+- 评分是 proxy，不是物理可发表能量
+- 在 `poses.csv` 中显式写入边界字段：
+  - `scientific_validity=placeholder_not_physical`
+  - `score_semantics=proxy_lower_is_better`
+  - `proxy_*` 指标
+
+---
+
+## 3. 运行入口
+
+### 3.1 Route A 主入口
+
+`scripts/run_binding_route_a.py`
+
+```bash
+python scripts/run_binding_route_a.py \
+  --receptor data/test_systems/minimal_complex/minimal_complex.pdb \
+  --ligand data/test_systems/minimal_complex/minimal_complex.pdb
+```
+
+更推荐：指定run-id：
+
+```bash
+python scripts/run_binding_route_a.py \
+  --run-id routeA_YYYYmmdd_HHMMSS \
+  --receptor data/test_systems/minimal_complex/minimal_complex.pdb \
+  --ligand data/test_systems/minimal_complex/minimal_complex.pdb
+```
+
+### 3.2 OpenMM 主链单独验证入口
+
+`scripts/run_minimal_openmm_validation.py`
+
+用途：只验证 AA-MD engine，不经过 `BindingWorkflow`。
+
+---
+
+## 4. 输出目录规范（当前真实状态）
+
+已采用 run_id 隔离：
+
+- `work/runs/<run_id>/...`：过程产物
+- `outputs/runs/<run_id>/...`：结果产物
+
+旧根目录产物已迁入归档：
+
+- `work/archive/legacy_20260310/`
+- `outputs/archive/legacy_20260310/`
+
+当前可见示例 run：
+
+- `work/runs/routeA_demo_20260310/`
+- `outputs/runs/routeA_demo_20260310/`
+
+注意：`routeA_demo_20260310` 是旧一次运行结果，里面当前只有：
+
+- `metadata/preprocess_report.json`
+
+还没有 `run_manifest.json` 与 `route_a_summary.md`。  
+这是因为该 run 发生在 workflow 新增自动写报告之前；重新运行一次 Route A 即会生成这两类文件。
+
+---
+
+## 5. 测试现状
+
+`tests/` 当前文件：
+
+- `test_docking_placeholder_engine.py`
+- `test_structure_preprocessor_and_assembler.py`
+- `test_binding_analyzer_smoke.py`
+- `test_route_a_workflow_smoke.py`
+- `test_run_manifest_smoke.py`
+
+这些测试的目的：
+
+- 保证 placeholder docking 的可重复性与边界语义
+- 保证 preprocessor + assembler 可联通
+- 保证 analyzer 在 trajectory 与 fallback 场景都有最小产出
+- 保证 workflow 在注入组件后能跑通，并写出 run manifest / summary
+
+---
+
+## 6. 目前明确未完成项（避免误解）
+
+1. 真实 docking backend（当前仅 placeholder）
+2. endpoint free energy 真正计算（当前仅配置与占位）
+3. membrane mode 真正构建与执行
+4. umbrella sampling / PMF 工作流
+5. 科研级统计稳健性与不确定性评估链
+
+---
+
+## 7. 给后续算法/细节开发同学的协作规则
+
+按 `casetwo.md` 边界推进：
+
+1. 不要把 OpenMM 实现细节写回 `BindingWorkflow`
+2. 新 backend 必须对齐 `DockingEngineProtocol`
+3. 新分析器必须对齐 `BindingAnalyzerProtocol`
+4. 优先扩展 `src/models/docking/`、`src/analysis/`、`src/utils/`，避免跨层污染
+5. 新增输出必须放进 `outputs/runs/<run_id>/...`，不要再回写根目录旧路径
+
+---
+
+## 8. 推荐任务（工程优先级）
+
+1. 重新执行一次 Route A，产出完整新格式 run（含 `run_manifest.json` 与 `route_a_summary.md`）
+2. 将 `StructureRepository.export_manifest()` 正式接入 workflow 主链（当前代码有实现，默认链路未显式调用）
+3. 确定真实 docking backend 适配契约（输入格式、评分语义、失败策略）
+4. 把 `docs/architecture/*` 与本 README 同步为同一版本描述
+

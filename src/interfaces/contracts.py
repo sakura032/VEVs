@@ -87,7 +87,7 @@ class BindingWorkflowResult:
     assembled: AssembledComplex
     simulation: SimulationArtifacts
     analysis_outputs: dict[str, Path] = field(default_factory=dict)
-    summary_metrics: dict[str, float] = field(default_factory=dict)
+    summary_metrics: dict[str, float | str] = field(default_factory=dict)
 
 
 # ========================================

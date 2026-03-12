@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+from pathlib import Path
 
 from src.configs import (
     DockingConfig,
@@ -143,7 +145,125 @@ class BindingWorkflow:
         """
         if result.docking.selected_pose is not None:
             result.summary_metrics["best_docking_score"] = result.docking.selected_pose.score
+        run_manifest_path = self._write_run_manifest(result)
+        self._write_route_a_summary(result, run_manifest_path)
         return result
+
+    def _resolve_analysis_mode(self, result: BindingWorkflowResult) -> str:
+        """解析 analysis_mode。
+
+        设计说明：
+        1. analysis_mode 由分析层产物 metrics.json 决定，避免 workflow 猜测分析策略。
+        2. 若分析层未产出该字段，回退为 not_available，保持 I/O 契约稳定。
+        """
+        metrics_path = result.analysis_outputs.get("metrics_json")
+        if metrics_path is None or not metrics_path.exists():
+            return "not_available"
+
+        try:
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "not_available"
+        return str(payload.get("analysis_mode", "not_available"))
+
+    def _resolve_scientific_validity(self, result: BindingWorkflowResult) -> str:
+        """解析 scientific_validity。
+
+        设计说明：
+        1. 优先读取 selected pose metadata，确保与真实 backend 输出对齐。
+        2. 若 metadata 缺失且 backend=placeholder，强制给出 placeholder_not_physical。
+        3. 其余 backend 默认标注 unspecified，避免伪造科学有效性结论。
+        """
+        selected = result.docking.selected_pose
+        if selected is not None:
+            value = selected.metadata.get("scientific_validity")
+            if value:
+                return str(value)
+            backend = str(selected.metadata.get("backend", ""))
+            if backend == "placeholder":
+                return "placeholder_not_physical"
+
+        if self.context.docking_config.backend == "placeholder":
+            return "placeholder_not_physical"
+        return "unspecified"
+
+    def _write_run_manifest(self, result: BindingWorkflowResult) -> Path:
+        """写出每次 run 的边界与可追踪清单（run_manifest.json）。"""
+        metadata_dir = self.context.paths.output_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        output_path = metadata_dir / "run_manifest.json"
+
+        selected = result.docking.selected_pose
+        backend = (
+            str(selected.metadata.get("backend", self.context.docking_config.backend))
+            if selected is not None
+            else str(self.context.docking_config.backend)
+        )
+
+        payload = {
+            "backend": backend,
+            "analysis_mode": self._resolve_analysis_mode(result),
+            "scientific_validity": self._resolve_scientific_validity(result),
+        }
+        output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        result.summary_metrics["run_manifest_path"] = str(output_path)
+        return output_path
+
+    def _write_route_a_summary(self, result: BindingWorkflowResult, run_manifest_path: Path) -> Path:
+        """写出 Route A 人类可读总结（route_a_summary.md）。
+
+        设计说明：
+        1. 报告属于结果层，固定写到 outputs/runs/<run_id>/reports。
+        2. 报告显式声明 placeholder 边界，防止误读为最终 scientific evidence。
+        """
+        report_dir = self.context.paths.report_dir
+        report_dir.mkdir(parents=True, exist_ok=True)
+        output_path = report_dir / "route_a_summary.md"
+
+        manifest_payload = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+        backend = str(manifest_payload.get("backend", "unknown"))
+        analysis_mode = str(manifest_payload.get("analysis_mode", "not_available"))
+        scientific_validity = str(
+            manifest_payload.get("scientific_validity", "unspecified")
+        )
+
+        lines = [
+            "# Route A Summary",
+            "",
+            "## Run Scope",
+            f"- mode: {result.assembled.mode}",
+            f"- backend: {backend}",
+            f"- analysis_mode: {analysis_mode}",
+            f"- scientific_validity: {scientific_validity}",
+            "",
+            "## Key Outputs",
+            f"- run_manifest: {run_manifest_path}",
+            f"- docking_ranked_poses: {result.docking.ranked_pose_table}",
+            f"- assembled_complex: {result.assembled.complex_structure}",
+            f"- trajectory: {result.simulation.trajectory}",
+            f"- analysis_metrics: {result.analysis_outputs.get('metrics_json')}",
+            "",
+            "## Boundary Statement",
+        ]
+
+        if scientific_validity == "placeholder_not_physical":
+            lines.append(
+                "- This run uses placeholder components and is for engine/workflow validation only."
+            )
+            lines.append(
+                "- Scores and proxy fields must not be interpreted as publication-grade physical evidence."
+            )
+        else:
+            lines.append(
+                "- Scientific validity is backend-dependent. Check run_manifest and method details before interpretation."
+            )
+
+        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result.summary_metrics["route_a_summary_path"] = str(output_path)
+        return output_path
 
     def run(self) -> BindingWorkflowResult:
         """执行完整案例二 workflow。"""

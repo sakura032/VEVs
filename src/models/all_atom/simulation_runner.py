@@ -122,14 +122,15 @@ class AllAtomSimulation:
 
         raise ValueError(f"Unsupported force field name: {ff_name}")
     
-    #3 构建 LangevinMiddleIntegrator 输出：OpenMM integrator 对象
+    #3 构建 LangevinMiddleIntegrator 输出：OpenMM integrator 积分器对象
+    # 带恒温的高精度积分器，适合生产阶段使用。参数来自 MDConfig。
     def _build_integrator(self) -> LangevinMiddleIntegrator:
         cfg = self.context.md_config
         sys_cfg = self.context.system_config
         return LangevinMiddleIntegrator(
-            sys_cfg.temperature_kelvin * unit.kelvin,
-            cfg.friction_per_ps / unit.picosecond,
-            cfg.timestep_fs * unit.femtosecond,
+            sys_cfg.temperature_kelvin * unit.kelvin,  #温度开尔文
+            cfg.friction_per_ps / unit.picosecond,  #摩擦系数
+            cfg.timestep_fs * unit.femtosecond,  #飞秒
         )
     
     #4 选择 CPU/CUDA/OpenCL，并设置精度属性，输出：OpenMM platform 对象 + properties dict
@@ -185,6 +186,7 @@ class AllAtomSimulation:
             )
     
     #6.2 检查当前 System 中是否已存在 MonteCarloBarostat，输出：布尔值
+    #蒙特卡罗恒压器 用于维持系统压力恒定的工具，NPT核心组件,通过随机调整系统体积模拟压力变化
     def _has_barostat(self) -> bool:
         """检查当前 System 中是否已存在 MonteCarloBarostat。"""
         if self._system is None:
