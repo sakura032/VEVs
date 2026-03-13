@@ -62,3 +62,6 @@ outputs/**
 !outputs/runs/.gitkeep
 !outputs/archive/
 !outputs/archive/.gitkeep
+
+# generated local clean test input
+/data/test_systems/minimal_complex/minimal_complex_clean.pdb
