@@ -1,137 +1,123 @@
-# VEVs I/O Contracts
+# VEVs Route A I/O Contracts
 
-更新时间：2026-03-11
+更新时间：2026-03-13
 
-本文件定义当前仓库 Route A 主线的 I/O contract（字段、格式、示例），以 `src/interfaces/contracts.py` 与实际产物为准。
+本文档定义当前 Route A 主链中关键输入、跨层契约、输出 artifact 的字段和语义边界。  
+以 `src/interfaces/contracts.py` 与当前可运行代码为准。
 
-## 1. 输入契约（Input）
+## 1. Input Contracts
 
 ### 1.1 `InputManifest`
 
-- 字段：
-  - `receptor_path: Path`
-  - `ligand_path: Path`
-  - `membrane_template_path: Path | None`
-  - `metadata: dict[str, str]`
-- 生产者：`BindingWorkflow.build_manifest()`
-- 消费者：`StructureRepository.validate_input_files()`、`StructurePreprocessor.preprocess()`
+字段：
+- `receptor_path: Path`
+- `ligand_path: Path`
+- `membrane_template_path: Path | None`
+- `metadata: dict[str, str]`
 
-### 1.2 配置对象（`src/configs`）
+生产方：
+- `BindingWorkflow.build_manifest()`
 
-- `SystemConfig`：体系与输入路径、力场、水模型、温压、`has_membrane`
-- `MDConfig`：最小化/平衡/生产时长、平台、reporter 采样间隔
-- `DockingConfig`：backend、n_poses、seed、score_cutoff
-- `EndpointFreeEnergyConfig`：当前仅配置层，占位 method 可为 `placeholder`
-- `MembraneConfig`：当前 Route A 中通常 `enabled=False`
+消费方：
+- `StructureRepository.validate_input_files()`
+- `StructurePreprocessor.preprocess()`
 
-## 2. 中间契约（Workflow Internal）
+### 1.2 Configuration Objects (`src/configs`)
+
+#### `SystemConfig`
+核心字段：
+- `receptor_path`, `ligand_path`
+- `forcefield_name`, `water_model`
+- `temperature_kelvin`, `pressure_bar`, `ionic_strength_molar`, `ph`
+- `has_membrane`
+- `replace_nonstandard_residues`（新增，默认 `False`，execution 层 PDBFixer 是否替换非标准残基）
+
+#### `MDConfig`
+核心字段：
+- `platform`, `precision`
+- `timestep_fs`, `friction_per_ps`
+- `minimize_*`, `nvt_equilibration_ns`, `npt_equilibration_ns`, `production_ns`
+- `save_interval_steps`, `state_interval_steps`, `checkpoint_interval_steps`
+- `random_seed`, `use_barostat`
+
+新增字段：
+- `device_index: str | None`（可选平台设备索引）
+- `cpu_threads: int | None`（可选 CPU 线程数）
+- `enable_pdbfixer_fix: bool`（新增，默认 `True`，execution 层 post-fix 开关）
+
+#### `MembraneConfig`
+- Route A 当前通常 `enabled=False`。
+
+## 2. Workflow Internal Contracts
 
 ### 2.1 `PreparedStructures`
-
-- 字段：
-  - `receptor_clean: Path`
-  - `ligand_prepared: Path`
-  - `preprocess_report: Path | None`
-- 约定输出：
-  - `work/runs/<run_id>/preprocessed/receptor_clean.pdb`
-  - `work/runs/<run_id>/preprocessed/ligand_prepared.pdb`
-  - `outputs/runs/<run_id>/metadata/preprocess_report.json`
+- `receptor_clean: Path`
+- `ligand_prepared: Path`
+- `preprocess_report: Path | None`
 
 ### 2.2 `DockingResult`
+- `poses: list[DockingPose]`
+- `ranked_pose_table: Path | None`
+- `selected_pose: DockingPose | None`
 
-- 字段：
-  - `poses: list[DockingPose]`
-  - `ranked_pose_table: Path | None`
-  - `selected_pose: DockingPose | None`
-- placeholder 结果语义：
-  - 分数为 proxy 排序分，不是发表级物理能量
+语义边界：
+- placeholder backend 的评分是 `proxy_*`，仅用于 pipeline ranking，不是发表级物理能量。
 
 ### 2.3 `AssembledComplex`
-
-- 字段：
-  - `complex_structure: Path`
-  - `mode: str`（当前 Route A 为 `solution`）
-  - `metadata: dict[str, Any]`
+- `complex_structure: Path`
+- `mode: str`（Route A 当前为 `solution`）
+- `metadata: dict[str, Any]`
 
 ### 2.4 `SimulationArtifacts`
+- `system_xml`
+- `initial_state_xml`
+- `minimized_structure`
+- `nvt_last_structure`
+- `npt_last_structure`
+- `trajectory`
+- `final_state_xml`
+- `log_csv`
+- `checkpoint`
 
-- 关键路径字段：
-  - `system_xml`
-  - `initial_state_xml`
-  - `minimized_structure`
-  - `nvt_last_structure`
-  - `npt_last_structure`
-  - `trajectory`
-  - `final_state_xml`
-  - `log_csv`
-  - `checkpoint`
+## 3. Output Contracts (run_id scoped)
 
-## 3. 输出契约（Output）
+### 3.1 work outputs: `work/runs/<run_id>/`
 
-### 3.1 Docking 结果表 `poses.csv`
+- `preprocessed/receptor_clean.pdb`
+- `preprocessed/ligand_prepared.pdb`
+- `assembled/complex_initial.pdb`
+- `md/complex_fixed.pdb`（execution-layer PDBFixer post-fix，开关开启时生成）
+- `md/solvated.pdb`（solvated initial anchor）
+- `md/system.xml`
+- `md/state_init.xml`
+- `md/minimized.pdb`
+- `md/equil_nvt_last.pdb`
+- `md/equil_npt_last.pdb`
+- `md/production.dcd`
+- `md/md_log.csv`
+- `md/production.chk`
+- `md/final_state.xml`
 
-路径：
-- `outputs/runs/<run_id>/docking/poses.csv`
+### 3.2 result outputs: `outputs/runs/<run_id>/`
 
-关键字段：
-- `backend`
-- `scientific_validity`
-- `score_semantics`
-- `proxy_vdw_score`
-- `proxy_electrostatic_score`
-- `proxy_distance_penalty`
+- `docking/poses.csv`
+- `docking/poses/pose_*.pdb`
+- `analysis/binding/metrics.json`
+- `analysis/binding/rmsd.csv`（trajectory 模式）
+- `analysis/binding/figures/*.png`
+- `metadata/preprocess_report.json`
+- `metadata/md_pdbfixer_report.json`（新增，execution-layer post-fix 报告）
+- `metadata/run_manifest.json`
+- `reports/route_a_summary.md`
 
-说明：
-- `proxy_*` 字段仅用于 pipeline validation 与相对排序，不可作为最终物理结论。
+## 4. Naming and Boundary Rules
 
-### 3.2 分析指标 `metrics.json`
-
-路径：
-- `outputs/runs/<run_id>/analysis/binding/metrics.json`
-
-关键字段（轨迹成功时）：
-- `analysis_mode=trajectory`
-- `metrics_semantics=physical_trajectory_derived`
-
-关键字段（fallback 时）：
-- `analysis_mode=log_fallback_*`
-- `metrics_semantics=diagnostic_not_physical`
-- `diagnostic="true"`
-
-### 3.3 运行清单 `run_manifest.json`
-
-路径：
-- `outputs/runs/<run_id>/metadata/run_manifest.json`
-
-固定字段：
-- `backend`
-- `analysis_mode`
-- `scientific_validity`
-
-示例：
-
-```json
-{
-  "backend": "placeholder",
-  "analysis_mode": "log_fallback_missing_trajectory",
-  "scientific_validity": "placeholder_not_physical"
-}
-```
-
-### 3.4 人类可读总结 `route_a_summary.md`
-
-路径：
-- `outputs/runs/<run_id>/reports/route_a_summary.md`
-
-固定内容：
-- run scope（mode/backend/analysis_mode/scientific_validity）
-- key outputs（manifest、poses、assembled、trajectory、metrics）
-- boundary statement（placeholder 时强制写明非科学结论）
-
-## 4. 命名与边界规则
-
-- 规则 1：placeholder 指标必须显式命名为 `proxy_*`。
-- 规则 2：fallback 指标必须带 `diagnostic` 标记。
-- 规则 3：`work/` 与 `outputs/` 不混用（过程产物与结果产物分离）。
-- 规则 4：新增结果字段时，必须同步更新本文件与 README/TREE。
+1. placeholder 分数字段必须显式使用 `proxy_*`。  
+2. fallback 分析必须携带诊断标记（如 `diagnostic=true`）。  
+3. `work/` 与 `outputs/` 不混用。  
+4. 新增字段或新增 artifact 时，必须同步更新：
+- `docs/architecture/io_contracts.md`
+- `docs/architecture/route_a_workflow.md`
+- `README.md`
+- `TREE_3_12.md`
 

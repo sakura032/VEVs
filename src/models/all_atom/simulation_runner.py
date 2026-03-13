@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+from pathlib import Path
+from typing import Any
 
 from src.configs import MDConfig, MembraneConfig, ProjectPaths, SystemConfig
 from src.interfaces.contracts import AssembledComplex, SimulationArtifacts
@@ -28,9 +31,21 @@ logger = logging.getLogger(__name__)
 class SimulationContext:
     """AA-MD 运行上下文（simulation context）。
 
-    作用：
-    1. 把 runner 运行时需要的配置打包。
-    2. 避免 prepare/minimize/equilibrate/production 每一步都传散乱参数。
+    输入:
+    - `SystemConfig`
+    - `MDConfig`
+    - `MembraneConfig`
+    - `ProjectPaths`
+
+    输出:
+    - 该类本身不产生产物，作为 `AllAtomSimulation` 的运行参数容器。
+
+    失败方式:
+    - dataclass 本身不抛业务异常，异常在各执行步骤内抛出。
+
+    架构边界:
+    - 该对象属于 MD Execution 层（execution layer），用于把配置一次性注入执行器，
+      避免 workflow 层传递散乱参数。
     """
 
     system_config: SystemConfig
@@ -40,18 +55,12 @@ class SimulationContext:
 
 
 class AllAtomSimulation:
-    """全原子模拟执行器（AA-MD execution façade）。
+    """全原子模拟执行器（AA-MD execution facade）。
 
-    当前 Phase 1 已实现：
-    - prepare_system()
-    - minimize()
-    - equilibrate()
-    - production()
-
-    设计边界：
-    1. 当前仅支持 solution mode，不支持 membrane mode
-    2. 当前假设 assembled complex 是未溶剂化的 PDB
-    3. 当前假设所选 force field 能覆盖体系中的全部残基/原子类型
+    设计目标:
+    - 保持与 workflow 的分层解耦：workflow 只编排，execution 负责 OpenMM 细节。
+    - 提供稳定主链：prepare -> minimize -> equilibrate -> production。
+    - 维持 run_id 目录规范下的可追踪产物输出。
     """
 
     def __init__(self, context: SimulationContext):
@@ -59,21 +68,18 @@ class AllAtomSimulation:
         self.paths = context.paths
         self.paths.ensure_dirs()
 
-        # Runtime handles（运行时对象）
+        # 运行时句柄（runtime handles）
         self._topology = None
         self._positions = None
         self._system = None
         self._integrator = None
         self._simulation = None
-
-        # Reporter state
         self._production_reporters_configured = False
-    
-    #1 统一定义产物路径
+
     def _build_artifact_paths(self) -> SimulationArtifacts:
+        """构建标准 MD 产物路径（artifact paths）."""
         md_dir = self.paths.work_dir / "md"
         md_dir.mkdir(parents=True, exist_ok=True)
-
         return SimulationArtifacts(
             system_xml=md_dir / "system.xml",
             initial_state_xml=md_dir / "state_init.xml",
@@ -85,91 +91,144 @@ class AllAtomSimulation:
             log_csv=md_dir / "md_log.csv",
             checkpoint=md_dir / "production.chk",
         )
-    
-    #2 把 forcefield_name + water_model 映射成 OpenMM XML 文件名. SystemConfig.forcefield_name 只是逻辑名，OpenMM 真正需要的是 XML 文件名
-    def _resolve_forcefield_files(self) -> tuple[str, str]:
-        ff_name = self.context.system_config.forcefield_name.lower()
-        water_model = self.context.system_config.water_model.lower()
 
-        if ff_name == "amber14sb":
-            water_map = {
+    def _resolve_forcefield_files(self) -> tuple[str, str]:
+        """解析 OpenMM 力场文件映射（force-field XML mapping）。
+
+        输入:
+        - `SystemConfig.forcefield_name`
+        - `SystemConfig.water_model`
+
+        输出:
+        - `(protein_ff_xml, water_ff_xml)`
+
+        失败方式:
+        - `ValueError`: 力场名/水模型不支持时抛出，并列出支持项。
+
+        架构边界:
+        - 该函数只做“配置到 OpenMM XML”的翻译，不包含 workflow 决策。
+        """
+        ff_name = self.context.system_config.forcefield_name.strip().lower()
+        water_model = self.context.system_config.water_model.strip().lower()
+
+        ff_to_water_map: dict[str, dict[str, str]] = {
+            "amber14sb": {
                 "tip3p": "amber14/tip3p.xml",
-                "tip3pfb": "amber14/tip3pfb.xml",
                 "spce": "amber14/spce.xml",
                 "tip4pew": "amber14/tip4pew.xml",
+                "tip3pfb": "amber14/tip3pfb.xml",
                 "tip4pfb": "amber14/tip4pfb.xml",
                 "opc": "amber14/opc.xml",
                 "opc3": "amber14/opc3.xml",
-            }
-            if water_model not in water_map:
-                raise ValueError(
-                    f"Unsupported water model for amber14sb: {water_model}"
-                )
-            return "amber14-all.xml", water_map[water_model]
+            },
+            # 使用 OpenMM 文档中的标准 CHARMM36 文件名。
+            "charmm36": {
+                "tip3p": "charmm36/water.xml",
+                "spce": "charmm36/spce.xml",
+                "tip4pew": "charmm36/tip4pew.xml",
+                "tip5p": "charmm36/tip5p.xml",
+            },
+        }
+        ff_main_map = {
+            "amber14sb": "amber14-all.xml",
+            "charmm36": "charmm36.xml",
+        }
 
-        if ff_name == "charmm36":
-            water_map = {
-                "tip3p": "charmm36_2024/water.xml",
-                "spce": "charmm36_2024/spce.xml",
-                "tip4pew": "charmm36_2024/tip4pew.xml",
-                "tip5p": "charmm36_2024/tip5p.xml",
-            }
-            if water_model not in water_map:
-                raise ValueError(
-                    f"Unsupported water model for charmm36: {water_model}"
-                )
-            return "charmm36_2024.xml", water_map[water_model]
+        if ff_name not in ff_to_water_map:
+            supported_ff = ", ".join(sorted(ff_to_water_map.keys()))
+            raise ValueError(
+                f"Unsupported force field name: {ff_name}. Supported force fields: {supported_ff}"
+            )
 
-        raise ValueError(f"Unsupported force field name: {ff_name}")
-    
-    #3 构建 LangevinMiddleIntegrator 输出：OpenMM integrator 积分器对象
-    # 带恒温的高精度积分器，适合生产阶段使用。参数来自 MDConfig。
+        water_map = ff_to_water_map[ff_name]
+        if water_model not in water_map:
+            supported_water = ", ".join(sorted(water_map.keys()))
+            raise ValueError(
+                f"Unsupported water model '{water_model}' for force field '{ff_name}'. "
+                f"Supported water models: {supported_water}"
+            )
+
+        return ff_main_map[ff_name], water_map[water_model]
+
     def _build_integrator(self) -> LangevinMiddleIntegrator:
+        """构建积分器（LangevinMiddleIntegrator）。"""
         cfg = self.context.md_config
         sys_cfg = self.context.system_config
         return LangevinMiddleIntegrator(
-            sys_cfg.temperature_kelvin * unit.kelvin,  #温度开尔文
-            cfg.friction_per_ps / unit.picosecond,  #摩擦系数
-            cfg.timestep_fs * unit.femtosecond,  #飞秒
+            sys_cfg.temperature_kelvin * unit.kelvin,
+            cfg.friction_per_ps / unit.picosecond,
+            cfg.timestep_fs * unit.femtosecond,
         )
-    
-    #4 选择 CPU/CUDA/OpenCL，并设置精度属性，输出：OpenMM platform 对象 + properties dict
+
     def _get_platform_and_properties(self) -> tuple[Platform, dict[str, str]]:
-        platform_name = self.context.md_config.platform
-        precision = self.context.md_config.precision
+        """获取平台与属性（platform-specific properties）。
+
+        输入:
+        - `MDConfig.platform`, `MDConfig.precision`
+        - 可选 `MDConfig.device_index`, `MDConfig.cpu_threads`
+
+        输出:
+        - `(Platform, properties)`
+
+        失败方式:
+        - 请求平台不可用时自动回退 CPU，不中断流程。
+        - 属性名不支持时不会抛错，按“可用即设，不可用即忽略”处理。
+
+        架构边界:
+        - 该函数属于 execution 层兼容逻辑，不改 workflow 默认行为。
+        """
+        cfg = self.context.md_config
+        requested_platform_name = cfg.platform
 
         try:
-            platform = Platform.getPlatformByName(platform_name)
+            platform = Platform.getPlatformByName(requested_platform_name)
         except Exception as exc:
             logger.warning(
                 "Requested platform %s is unavailable, falling back to CPU. Original error: %s",
-                platform_name,
+                requested_platform_name,
                 exc,
             )
-            return Platform.getPlatformByName("CPU"), {}
+            platform = Platform.getPlatformByName("CPU")
 
+        platform_name = platform.getName()
+        property_names = set(platform.getPropertyNames())
         properties: dict[str, str] = {}
-        if platform_name in {"CUDA", "OpenCL"}:
-            properties["Precision"] = precision
+
+        # 精度属性兼容（Precision / CudaPrecision / OpenCLPrecision）。
+        if "Precision" in property_names:
+            properties["Precision"] = cfg.precision
+        elif platform_name.upper() == "CUDA" and "CudaPrecision" in property_names:
+            properties["CudaPrecision"] = cfg.precision
+        elif platform_name.upper() == "OPENCL" and "OpenCLPrecision" in property_names:
+            properties["OpenCLPrecision"] = cfg.precision
+
+        # 设备索引（DeviceIndex family）。
+        if cfg.device_index:
+            if "DeviceIndex" in property_names:
+                properties["DeviceIndex"] = str(cfg.device_index)
+            elif platform_name.upper() == "CUDA" and "CudaDeviceIndex" in property_names:
+                properties["CudaDeviceIndex"] = str(cfg.device_index)
+            elif platform_name.upper() == "OPENCL" and "OpenCLDeviceIndex" in property_names:
+                properties["OpenCLDeviceIndex"] = str(cfg.device_index)
+
+        # CPU 线程（Threads / CpuThreads）。
+        if cfg.cpu_threads is not None:
+            if "Threads" in property_names:
+                properties["Threads"] = str(cfg.cpu_threads)
+            elif "CpuThreads" in property_names:
+                properties["CpuThreads"] = str(cfg.cpu_threads)
 
         return platform, properties
-    
-    #5 把纳秒转换为积分步数，输出：整数步数
-    def _steps_from_ns(self, time_ns: float) -> int:
-        """把纳秒转换为积分步数（ns -> integration steps）。
 
-        timestep_fs 以飞秒为单位，因此：
-        steps = time_ns * 1e6 / timestep_fs
-        """
+    def _steps_from_ns(self, time_ns: float) -> int:
+        """把纳秒转成积分步数（ns -> integration steps）。"""
         if time_ns < 0:
             raise ValueError("time_ns must be non-negative")
         timestep_fs = self.context.md_config.timestep_fs
         return int(round(time_ns * 1_000_000 / timestep_fs))
-    
-    #6 写当前帧、检查恒压器、配置 DCD/CSV/checkpoint 报告器
-    #6.1 把当前 Simulation context 中的坐标写成 PDB 文件，输出：无（直接写文件）
-    def _write_current_structure(self, output_path) -> None:
-        """把当前 context 中的坐标写成 PDB。"""
+
+    def _write_current_structure(self, output_path: Path) -> None:
+        """将当前 context 坐标写出为 PDB。"""
         if self._simulation is None or self._topology is None:
             raise RuntimeError("Simulation runtime is not initialized.")
 
@@ -179,16 +238,10 @@ class AllAtomSimulation:
             enforcePeriodicBox=True,
         )
         with open(output_path, "w", encoding="utf-8") as handle:
-            app.PDBFile.writeFile(
-                self._topology,
-                state.getPositions(),
-                handle,
-            )
-    
-    #6.2 检查当前 System 中是否已存在 MonteCarloBarostat，输出：布尔值
-    #蒙特卡罗恒压器 用于维持系统压力恒定的工具，NPT核心组件,通过随机调整系统体积模拟压力变化
+            app.PDBFile.writeFile(self._topology, state.getPositions(), handle)
+
     def _has_barostat(self) -> bool:
-        """检查当前 System 中是否已存在 MonteCarloBarostat。"""
+        """检查系统中是否已有 barostat。"""
         if self._system is None:
             return False
         for i in range(self._system.getNumForces()):
@@ -196,21 +249,19 @@ class AllAtomSimulation:
             if isinstance(force, MonteCarloBarostat):
                 return True
         return False
-    
-    #6.3 配置 production 阶段 reporters：DCDReporter + StateDataReporter + CheckpointReporter。输出：无（直接修改 Simulation 对象）
+
     def _configure_production_reporters(
         self,
         artifacts: SimulationArtifacts,
         total_steps: int,
     ) -> None:
-        """配置 production 阶段 reporters。"""
+        """配置 production reporters（DCD/CSV/checkpoint）。"""
         if self._simulation is None:
             raise RuntimeError("Simulation runtime is not initialized.")
         if total_steps <= 0:
             raise ValueError("Production total_steps must be positive.")
 
         cfg = self.context.md_config
-
         if cfg.save_interval_steps <= 0:
             raise ValueError("save_interval_steps must be positive.")
         if cfg.state_interval_steps <= 0:
@@ -218,10 +269,7 @@ class AllAtomSimulation:
         if cfg.checkpoint_interval_steps <= 0:
             raise ValueError("checkpoint_interval_steps must be positive.")
 
-        # 清空旧 reporters，避免重复追加
         self._simulation.reporters.clear()
-
-        # 1) 坐标轨迹
         self._simulation.reporters.append(
             app.DCDReporter(
                 str(artifacts.trajectory),
@@ -230,8 +278,6 @@ class AllAtomSimulation:
                 enforcePeriodicBox=None,
             )
         )
-
-        # 2) 数值日志
         self._simulation.reporters.append(
             app.StateDataReporter(
                 str(artifacts.log_csv),
@@ -250,8 +296,6 @@ class AllAtomSimulation:
                 append=False,
             )
         )
-
-        # 3) Checkpoint
         self._simulation.reporters.append(
             app.CheckpointReporter(
                 str(artifacts.checkpoint),
@@ -267,49 +311,172 @@ class AllAtomSimulation:
             artifacts.log_csv,
             artifacts.checkpoint,
         )
-    
-    #7 构建 OpenMM 体系（PDB -> 加氢/溶剂/离子 -> System/Simulation），输出：SimulationArtifacts（包含 system.xml、initial_state.xml 等路径）
-    def prepare_system(self, assembled: AssembledComplex) -> SimulationArtifacts:
-        """准备 OpenMM 体系（prepare OpenMM system）。
 
-        Phase 1 minimal runnable version:
-        1. 读取未溶剂化的 complex PDB
-        2. 构建 ForceField
-        3. 创建 Modeller
-        4. 补氢
-        5. 加显式水和离子
-        6. createSystem()
-        7. 创建 Integrator / Simulation
-        8. 写出 system.xml 与 initial_state.xml
+    def _write_json(self, output_path: Path, payload: dict[str, Any]) -> None:
+        """写 JSON 工具函数（JSON writer helper）。"""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _pdbfixer_fix_pdb(self, input_pdb: Path, output_pdb: Path) -> dict[str, Any]:
+        """用 PDBFixer 对 assembled complex 做执行层修复（execution-side fix）。
+
+        输入:
+        - `input_pdb`: workflow 组装得到的 complex PDB
+        - `output_pdb`: 修复后输出路径（通常为 `work/.../md/complex_fixed.pdb`）
+
+        输出:
+        - 修复报告 `dict`，包含 missing residues/atoms、nonstandard residues 列表、
+          是否启用替换（replace_nonstandard_residues）
+
+        失败方式:
+        - `FileNotFoundError`: 输入文件缺失
+        - `ValueError`: 文件后缀非法（非 `.pdb`）
+        - `ImportError`: 缺少 `pdbfixer` 或 `openmm`
+
+        架构边界:
+        - 该函数属于 MD Execution 层的鲁棒性增强（robustness enhancement），
+          不替代 Structure Preparation 层。
+        """
+        if not input_pdb.exists():
+            raise FileNotFoundError(f"Input PDB not found for execution fix: {input_pdb}")
+        if input_pdb.suffix.lower() != ".pdb":
+            raise ValueError(f"Execution fix currently supports only .pdb, got: {input_pdb}")
+
+        try:
+            from pdbfixer import PDBFixer
+            from openmm import app as openmm_app
+        except ImportError as exc:
+            raise ImportError(
+                "Execution-layer PDBFixer step requires pdbfixer and openmm."
+            ) from exc
+
+        fixer = PDBFixer(filename=str(input_pdb))
+        fixer.findMissingResidues()
+        fixer.findNonstandardResidues()
+        fixer.findMissingAtoms()
+
+        nonstandard_rows: list[dict[str, str]] = []
+        for item in fixer.nonstandardResidues:
+            residue = item[0]
+            replacement = item[1] if len(item) > 1 else "UNKNOWN"
+            nonstandard_rows.append(
+                {
+                    "residue_name": str(getattr(residue, "name", "UNK")),
+                    "chain_id": str(getattr(getattr(residue, "chain", None), "id", "")),
+                    "residue_id": str(getattr(residue, "id", "")),
+                    "replacement": str(replacement),
+                }
+            )
+
+        # 默认不替换 nonstandard residues，避免 silent mutation（静默突变）。
+        replace_nonstandard = self.context.system_config.replace_nonstandard_residues
+        if replace_nonstandard and fixer.nonstandardResidues:
+            fixer.replaceNonstandardResidues()
+
+        # 默认不在这里 addMissingHydrogens，避免与 modeller.addHydrogens 重复。
+        fixer.addMissingAtoms()
+
+        output_pdb.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_pdb, "w", encoding="utf-8") as handle:
+            openmm_app.PDBFile.writeFile(fixer.topology, fixer.positions, handle)
+
+        return {
+            "input_pdb": str(input_pdb.resolve()),
+            "output_pdb": str(output_pdb.resolve()),
+            "replace_nonstandard_residues": replace_nonstandard,
+            "missing_residues_groups": len(fixer.missingResidues),
+            "missing_atoms_residues": len(fixer.missingAtoms),
+            "missing_terminals_residues": len(fixer.missingTerminals),
+            "nonstandard_residue_count": len(nonstandard_rows),
+            "nonstandard_residues": nonstandard_rows,
+        }
+
+    def _pdbfixer_fix_complex_if_enabled(
+        self,
+        structure_path: Path,
+        md_dir: Path,
+        metadata_dir: Path,
+    ) -> Path:
+        """按开关执行 complex 后处理（post-fix）并写报告。
+
+        输入:
+        - `structure_path`: 原始 assembled complex
+        - `md_dir`: run 对应 `work/.../md` 目录
+        - `metadata_dir`: run 对应 `outputs/.../metadata` 目录
+
+        输出:
+        - 后续 OpenMM 将读取的结构路径（原始或修复后）
+
+        失败方式:
+        - 开关开启时，依赖缺失/输入非法会抛出 `ImportError`/`ValueError`/`FileNotFoundError`
+
+        架构边界:
+        - 属于 execution 层，目的是提升“可执行稳定性（execution robustness）”。
+        """
+        if not self.context.md_config.enable_pdbfixer_fix:
+            logger.info("Execution-layer PDBFixer post-fix is disabled by config.")
+            return structure_path
+
+        fixed_path = md_dir / "complex_fixed.pdb"
+        report = self._pdbfixer_fix_pdb(structure_path, fixed_path)
+        report_path = metadata_dir / "md_pdbfixer_report.json"
+        self._write_json(report_path, report)
+        logger.info("Execution-layer PDBFixer report written to %s", report_path)
+        return fixed_path
+
+    def prepare_system(self, assembled: AssembledComplex) -> SimulationArtifacts:
+        """准备 OpenMM 系统（prepare OpenMM system）。
+
+        输入:
+        - `AssembledComplex`（当前要求 mode=solution，且结构为 `.pdb`）
+
+        输出:
+        - `SimulationArtifacts`（路径集合），并初始化 runtime handles。
+
+        失败方式:
+        - `NotImplementedError`: mode 不是 `solution`
+        - `ValueError`: 输入格式非法/力场映射失败
+        - `ImportError`: 若启用 execution-layer PDBFixer 且依赖缺失
+
+        架构边界:
+        - 属于 MD Execution 层，不负责 docking/workflow 决策。
         """
         logger.info("Preparing OpenMM system for %s", assembled.complex_structure)
 
         if assembled.mode != "solution":
             raise NotImplementedError(
-                "Phase 1 minimal runner currently supports solution mode only, "
-                "not membrane mode."
+                "Phase 1 minimal runner currently supports solution mode only, not membrane mode."
             )
 
         structure_path = assembled.complex_structure
         if structure_path.suffix.lower() != ".pdb":
             raise ValueError(
-                "Phase 1 minimal runner currently supports only PDB input for assembled complex"
+                "Phase 1 minimal runner currently supports only PDB input for assembled complex."
             )
 
         artifacts = self._build_artifact_paths()
+        md_dir = artifacts.system_xml.parent if artifacts.system_xml is not None else (self.paths.work_dir / "md")
+        metadata_dir = self.paths.output_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        # 在 execution 层做可控后处理（post-fix），增强跨输入鲁棒性。
+        structure_path = self._pdbfixer_fix_complex_if_enabled(
+            structure_path=structure_path,
+            md_dir=md_dir,
+            metadata_dir=metadata_dir,
+        )
 
         protein_ff_xml, water_ff_xml = self._resolve_forcefield_files()
         logger.info("Using OpenMM force field files: %s + %s", protein_ff_xml, water_ff_xml)
 
         pdb = app.PDBFile(str(structure_path))
         forcefield = app.ForceField(protein_ff_xml, water_ff_xml)
-
         modeller = app.Modeller(pdb.topology, pdb.positions)
 
-        # 补氢
         modeller.addHydrogens(forcefield, pH=self.context.system_config.ph)
-
-        # 加显式水和离子
         modeller.addSolvent(
             forcefield,
             model=self.context.system_config.water_model.lower(),
@@ -317,17 +484,22 @@ class AllAtomSimulation:
             ionicStrength=self.context.system_config.ionic_strength_molar * unit.molar,
         )
 
-        # 创建 System
+        # 固定输出 solvated 初态结构，便于可视化与 debug。
+        solvated_pdb_path = md_dir / "solvated.pdb"
+        with open(solvated_pdb_path, "w", encoding="utf-8") as handle:
+            app.PDBFile.writeFile(modeller.topology, modeller.positions, handle)
+
         system = forcefield.createSystem(
             modeller.topology,
             nonbondedMethod=app.PME,
             nonbondedCutoff=1.0 * unit.nanometer,
             constraints=app.HBonds,
+            rigidWater=True,
+            ewaldErrorTolerance=0.0005,
         )
 
         integrator = self._build_integrator()
         platform, properties = self._get_platform_and_properties()
-
         if properties:
             simulation = app.Simulation(
                 modeller.topology,
@@ -343,7 +515,6 @@ class AllAtomSimulation:
                 integrator,
                 platform,
             )
-
         simulation.context.setPositions(modeller.positions)
 
         self._topology = modeller.topology
@@ -353,11 +524,7 @@ class AllAtomSimulation:
         self._simulation = simulation
         self._production_reporters_configured = False
 
-        artifacts.system_xml.write_text(
-            XmlSerializer.serialize(system),
-            encoding="utf-8",
-        )
-
+        artifacts.system_xml.write_text(XmlSerializer.serialize(system), encoding="utf-8")
         init_state = simulation.context.getState(
             getPositions=True,
             getEnergy=True,
@@ -368,24 +535,15 @@ class AllAtomSimulation:
             encoding="utf-8",
         )
 
-        logger.info("OpenMM system prepared successfully")
+        logger.info("OpenMM system prepared successfully; solvated structure -> %s", solvated_pdb_path)
         return artifacts
-    
-    #8 能量最小化（minimization），输出：SimulationArtifacts（写出 minimized.pdb 更新 minimized_structure 路径）
-    def minimize(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
-        """能量最小化（energy minimization）。
 
-        Phase 1:
-        - 调用 OpenMM minimizeEnergy()
-        - 将最小化后的结构写出为 minimized.pdb
-        """
+    def minimize(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
+        """能量最小化（energy minimization）。"""
         if self._simulation is None or self._topology is None:
-            raise RuntimeError(
-                "Simulation runtime is not initialized. Call prepare_system() before minimize()."
-            )
+            raise RuntimeError("Simulation runtime is not initialized. Call prepare_system() before minimize().")
 
         logger.info("Starting energy minimization")
-
         self._simulation.minimizeEnergy(
             tolerance=(
                 self.context.md_config.minimize_tolerance_kj_mol_nm
@@ -400,34 +558,19 @@ class AllAtomSimulation:
             getEnergy=True,
             enforcePeriodicBox=True,
         )
-
         with open(artifacts.minimized_structure, "w", encoding="utf-8") as handle:
-            app.PDBFile.writeFile(
-                self._topology,
-                minimized_state.getPositions(),
-                handle,
-            )
+            app.PDBFile.writeFile(self._topology, minimized_state.getPositions(), handle)
 
         logger.info("Minimized structure written to %s", artifacts.minimized_structure)
         return artifacts
-    
-    #9 平衡（equilibration），输出：SimulationArtifacts（写出 equil_nvt_last.pdb 和 equil_npt_last.pdb 更新 nvt_last_structure 和 npt_last_structure 路径）
-    def equilibrate(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
-        """真实实现最小 NVT/NPT 平衡（minimal NVT/NPT equilibration）。
 
-        当前实现：
-        1. NVT：按目标温度初始化速度，并积分 nvt_equilibration_ns
-        2. NPT：若 use_barostat=True，则加入 MonteCarloBarostat，reinitialize 后继续积分
-        3. 分别写出 equil_nvt_last.pdb 和 equil_npt_last.pdb
-        """
+    def equilibrate(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
+        """执行最小 NVT/NPT 平衡（minimal equilibration）。"""
         if self._simulation is None or self._system is None or self._topology is None:
-            raise RuntimeError(
-                "Simulation runtime is not initialized. Call prepare_system() before equilibrate()."
-            )
+            raise RuntimeError("Simulation runtime is not initialized. Call prepare_system() before equilibrate().")
 
         cfg = self.context.md_config
         sys_cfg = self.context.system_config
-
         nvt_steps = self._steps_from_ns(cfg.nvt_equilibration_ns)
         npt_steps = self._steps_from_ns(cfg.npt_equilibration_ns)
 
@@ -436,29 +579,21 @@ class AllAtomSimulation:
             cfg.nvt_equilibration_ns,
             nvt_steps,
         )
-
-        # 给体系分配与目标温度匹配的初始速度
         self._simulation.context.setVelocitiesToTemperature(
             sys_cfg.temperature_kelvin,
             cfg.random_seed,
         )
-
-        # NVT 积分
         if nvt_steps > 0:
             self._simulation.step(nvt_steps)
-
-        # 写出 NVT 末态结构
         self._write_current_structure(artifacts.nvt_last_structure)
         logger.info("NVT last frame written to %s", artifacts.nvt_last_structure)
 
-        # NPT：通过 MonteCarloBarostat 实现恒压
         if cfg.use_barostat and npt_steps > 0:
             logger.info(
                 "Starting NPT equilibration: %.3f ns (%d steps)",
                 cfg.npt_equilibration_ns,
                 npt_steps,
             )
-
             if not self._has_barostat():
                 self._system.addForce(
                     MonteCarloBarostat(
@@ -466,9 +601,7 @@ class AllAtomSimulation:
                         sys_cfg.temperature_kelvin * unit.kelvin,
                     )
                 )
-                # Context 创建后修改了 System，必须 reinitialize 才会生效
                 self._simulation.context.reinitialize(preserveState=True)
-
             self._simulation.step(npt_steps)
             self._write_current_structure(artifacts.npt_last_structure)
             logger.info("NPT last frame written to %s", artifacts.npt_last_structure)
@@ -478,48 +611,26 @@ class AllAtomSimulation:
                 cfg.use_barostat,
                 npt_steps,
             )
-            # 为了保证下游 I/O 契约完整，这里把 NVT 末态再写一份到 NPT 输出路径
             self._write_current_structure(artifacts.npt_last_structure)
 
         return artifacts
-    
-    #10 生产（production），输出：SimulationArtifacts（写出 production.dcd、final_state.xml、production.chk 更新 trajectory、final_state_xml、checkpoint 路径）
-    def production(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
-        """真实实现 production MD。
 
-        当前实现：
-        1. 配置 DCDReporter / StateDataReporter / CheckpointReporter
-        2. 按 production_ns 积分推进
-        3. 显式写出 final_state.xml 和 production.chk
-        """
+    def production(self, artifacts: SimulationArtifacts) -> SimulationArtifacts:
+        """执行生产模拟（production MD）。"""
         if self._simulation is None or self._system is None or self._topology is None:
-            raise RuntimeError(
-                "Simulation runtime is not initialized. Call prepare_system() before production()."
-            )
+            raise RuntimeError("Simulation runtime is not initialized. Call prepare_system() before production().")
 
         cfg = self.context.md_config
         prod_steps = self._steps_from_ns(cfg.production_ns)
         if prod_steps <= 0:
-            raise ValueError(
-                "production_ns must be positive to generate a production trajectory."
-            )
+            raise ValueError("production_ns must be positive to generate a production trajectory.")
 
-        logger.info(
-            "Starting production MD: %.3f ns (%d steps)",
-            cfg.production_ns,
-            prod_steps,
-        )
-
+        logger.info("Starting production MD: %.3f ns (%d steps)", cfg.production_ns, prod_steps)
         self._configure_production_reporters(artifacts, prod_steps)
-
         self._simulation.step(prod_steps)
 
-        # 显式写出最终 state（portable XML）
         self._simulation.saveState(str(artifacts.final_state_xml))
-
-        # 显式写出最终 checkpoint，确保最后一步状态被保存
         self._simulation.saveCheckpoint(str(artifacts.checkpoint))
-
         logger.info(
             "Production completed: trajectory -> %s, final state -> %s, checkpoint -> %s",
             artifacts.trajectory,
@@ -527,19 +638,17 @@ class AllAtomSimulation:
             artifacts.checkpoint,
         )
         return artifacts
-    
-    #11 串联执行 AA-MD protocol: prepare -> minimize -> equilibrate -> production，输出：SimulationArtifacts（包含 prepare/minimize/equilibration/production 产物路径）
+
     def run_full_protocol(
         self,
         assembled: AssembledComplex,
         run_production: bool = True,
     ) -> SimulationArtifacts:
-        """执行当前已实现的 AA-MD protocol。"""
+        """串联执行完整协议（prepare -> minimize -> equilibrate -> production）。"""
         artifacts = self.prepare_system(assembled)
         artifacts = self.minimize(artifacts)
         artifacts = self.equilibrate(artifacts)
-
         if run_production:
             artifacts = self.production(artifacts)
-
         return artifacts
+

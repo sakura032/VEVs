@@ -29,6 +29,14 @@ class MDConfig:
     random_seed: int = 20260308
     use_barostat: bool = True
     use_semiisotropic_barostat: bool = False
+    # 平台设备索引（platform-specific device index），可选。
+    # 例如 CUDA/OpenCL 多卡场景下设置 "0" 或 "0,1"。
+    device_index: str | None = None
+    # CPU 线程数（CPU thread count），可选。
+    cpu_threads: int | None = None
+    # 是否在 execution 层对 assembled complex 再做一次 PDBFixer 修复（post-fix）。
+    # 该步骤用于提升鲁棒性与可移植性；若设为 False 则保持旧行为。
+    enable_pdbfixer_fix: bool = True
 
     def validate(self) -> None:
         if self.timestep_fs <= 0:
@@ -37,3 +45,5 @@ class MDConfig:
             raise ValueError("production_ns must be positive")
         if self.save_interval_steps <= 0:
             raise ValueError("save_interval_steps must be positive")
+        if self.cpu_threads is not None and self.cpu_threads <= 0:
+            raise ValueError("cpu_threads must be positive when provided")

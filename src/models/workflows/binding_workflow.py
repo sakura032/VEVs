@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import json
@@ -213,11 +213,22 @@ class BindingWorkflow:
         return output_path
 
     def _write_route_a_summary(self, result: BindingWorkflowResult, run_manifest_path: Path) -> Path:
-        """写出 Route A 人类可读总结（route_a_summary.md）。
+        """写出 Route A 的详细中文总结（route_a_summary.md）。
 
-        设计说明：
-        1. 报告属于结果层，固定写到 outputs/runs/<run_id>/reports。
-        2. 报告显式声明 placeholder 边界，防止误读为最终 scientific evidence。
+        输入：
+        - `result`: 本次 workflow 运行结果对象。
+        - `run_manifest_path`: 已写出的 run_manifest.json 路径。
+
+        输出：
+        - `outputs/runs/<run_id>/reports/route_a_summary.md`
+
+        失败方式：
+        - `json.JSONDecodeError`: run_manifest 或 metrics 不是合法 JSON（代码内做了容错兜底）。
+        - `OSError`: 报告目录不可写时抛出。
+
+        分层关系：
+        - 该函数属于 workflow orchestration 层的“结果汇总职责”，
+          不参与具体模拟与分析计算，只把跨层结果拼装成可读报告。
         """
         report_dir = self.context.paths.report_dir
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -230,24 +241,133 @@ class BindingWorkflow:
             manifest_payload.get("scientific_validity", "unspecified")
         )
 
+        metrics_path = result.analysis_outputs.get("metrics_json")
+        metrics_payload: dict[str, object] = {}
+        if metrics_path is not None and metrics_path.exists():
+            try:
+                metrics_payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except Exception:
+                metrics_payload = {}
+
+        run_id = self.context.paths.work_dir.name
+        selected_pose = result.docking.selected_pose
+
         lines = [
             "# Route A Summary",
             "",
-            "## Run Scope",
+            "## 一、运行概览（Run Scope）",
+            f"- run_id: {run_id}",
             f"- mode: {result.assembled.mode}",
             f"- backend: {backend}",
             f"- analysis_mode: {analysis_mode}",
             f"- scientific_validity: {scientific_validity}",
+            f"- receptor_input: {result.manifest.receptor_path}",
+            f"- ligand_input: {result.manifest.ligand_path}",
             "",
-            "## Key Outputs",
-            f"- run_manifest: {run_manifest_path}",
-            f"- docking_ranked_poses: {result.docking.ranked_pose_table}",
-            f"- assembled_complex: {result.assembled.complex_structure}",
-            f"- trajectory: {result.simulation.trajectory}",
-            f"- analysis_metrics: {result.analysis_outputs.get('metrics_json')}",
+            "## 二、工作流流程图（Workflow Flowchart）",
+            "```mermaid",
+            "flowchart TD",
+            "  A[输入: receptor/ligand PDB] --> B[build_manifest]",
+            "  B --> C[StructureRepository.validate_input_files]",
+            "  C --> D[StructurePreprocessor.preprocess]",
+            "  D --> E[DockingEngine.dock]",
+            "  E --> F[rank_poses + select_pose]",
+            "  F --> G[ComplexAssembler.assemble]",
+            "  G --> H[AllAtomSimulation.run_full_protocol]",
+            "  H --> I[BindingAnalyzer.analyze]",
+            "  I --> J[write run_manifest.json]",
+            "  J --> K[write route_a_summary.md]",
+            "```",
             "",
-            "## Boundary Statement",
+            "## 三、逐步执行说明（输入/调用模块/输出）",
+            "",
+            "| 步骤 | 调用模块 | 输入 | 输出 |",
+            "| --- | --- | --- | --- |",
+            "| 1. 构建清单 | `src/models/workflows/binding_workflow.py::build_manifest` | `SystemConfig` | `InputManifest`（内存对象） |",
+            "| 2. 输入校验 | `src/utils/structure_repository.py::validate_input_files` | `InputManifest` | 输入文件存在性与格式检查结果 |",
+            "| 3. 结构预处理 | `src/utils/structure_preprocessor.py::preprocess` | receptor/ligand 原始结构 | `work/runs/<run_id>/preprocessed/*` + `outputs/runs/<run_id>/metadata/preprocess_report.json` |",
+            "| 4. docking | `src/models/docking/placeholder_engine.py::dock` | 预处理结构 | `outputs/runs/<run_id>/docking/poses.csv` + `outputs/runs/<run_id>/docking/poses/pose_*.pdb` |",
+            "| 5. pose 排序/选择 | `binding_workflow.py::rank_poses/select_pose` | docking poses | `selected_pose`（内存对象） |",
+            "| 6. complex 组装 | `src/utils/complex_assembler.py::assemble` | receptor + selected_pose | `work/runs/<run_id>/assembled/complex_initial.pdb` |",
+            "| 7. MD 执行 | `src/models/all_atom/simulation_runner.py::run_full_protocol` | `AssembledComplex` | `work/runs/<run_id>/md/*` + `outputs/runs/<run_id>/metadata/md_pdbfixer_report.json` |",
+            "| 8. 分析 | `src/analysis/binding_analyzer.py::analyze` | trajectory + topology/log | `outputs/runs/<run_id>/analysis/binding/*` |",
+            "| 9. 汇总 | `binding_workflow.py::summarize` | 各阶段结果对象 | `metadata/run_manifest.json` + `reports/route_a_summary.md` |",
+            "",
+            "## 四、关键输出文件与作用",
+            f"- run_manifest.json: {run_manifest_path}",
+            "  - 作用：记录本次 run 的边界属性（backend / analysis_mode / scientific_validity），避免误读。",
+            f"- metrics.json: {metrics_path}",
+            "  - 作用：记录分析阶段核心指标（如 RMSD 统计、analysis_mode、metrics_semantics）。",
+            f"- preprocess_report.json: {result.prepared.preprocess_report}",
+            "  - 作用：记录预处理阶段清洗与输入校验信息。",
+            f"- md_pdbfixer_report.json: {self.context.paths.output_dir / 'metadata' / 'md_pdbfixer_report.json'}",
+            "  - 作用：记录 execution 层 PDBFixer 的修复行为，便于追踪潜在结构变化。",
+            f"- assembled complex: {result.assembled.complex_structure}",
+            "  - 作用：组装后的复合体初始结构，作为 MD 输入锚点。",
+            f"- production trajectory: {result.simulation.trajectory}",
+            "  - 作用：生产期轨迹（DCD），用于后续结构动力学分析。",
+            f"- md_log.csv: {result.simulation.log_csv}",
+            "  - 作用：记录 step 级温度/能量等时间序列，用于数值稳定性诊断。",
+            "",
+            "## 五、JSON 文件读法（本次 run 实例）",
+            "### 1) run_manifest.json",
+            "```json",
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            "```",
+            "- `backend`：本次 docking 后端标识。",
+            "- `analysis_mode`：分析层实际采用的模式。",
+            "- `scientific_validity`：科学有效性声明；`placeholder_not_physical` 代表不能作为发表级物理证据。",
+            "",
+            "### 2) metrics.json",
+            "```json",
+            json.dumps(metrics_payload, ensure_ascii=False, indent=2),
+            "```",
+            "- 常见字段解释：",
+            "  - `n_frames`：读取到的轨迹帧数。",
+            "  - `rmsd_mean_angstrom` / `rmsd_max_angstrom` / `rmsd_min_angstrom`：RMSD 统计量。",
+            "  - `analysis_mode`：`trajectory` 表示指标由轨迹直接计算。",
+            "  - `metrics_semantics`：指标语义声明，`physical_trajectory_derived` 表示来自真实轨迹。",
+            "",
+            "## 六、归档建议（Archive Recommendation）",
+            "- 建议长期保留：",
+            "  1. `outputs/runs/<run_id>/docking/`",
+            "  2. `outputs/runs/<run_id>/analysis/binding/`",
+            "  3. `outputs/runs/<run_id>/metadata/*.json`",
+            "  4. `outputs/runs/<run_id>/reports/route_a_summary.md`",
+            "  5. `work/runs/<run_id>/md/production.dcd` 与 `work/runs/<run_id>/md/md_log.csv`",
+            "- WSL/Linux 打包示例：",
+            "```bash",
+            "tar -czf outputs/archive/route_a_<run_id>.tar.gz \\",
+            "  outputs/runs/<run_id>/docking \\",
+            "  outputs/runs/<run_id>/analysis/binding \\",
+            "  outputs/runs/<run_id>/metadata \\",
+            "  outputs/runs/<run_id>/reports \\",
+            "  work/runs/<run_id>/md/production.dcd \\",
+            "  work/runs/<run_id>/md/md_log.csv",
+            "```",
+            "- Windows PowerShell 打包示例：",
+            "```powershell",
+            "Compress-Archive -Path \\",
+            "  outputs/runs/<run_id>/docking, \\",
+            "  outputs/runs/<run_id>/analysis/binding, \\",
+            "  outputs/runs/<run_id>/metadata, \\",
+            "  outputs/runs/<run_id>/reports, \\",
+            "  work/runs/<run_id>/md/production.dcd, \\",
+            "  work/runs/<run_id>/md/md_log.csv \\",
+            "  -DestinationPath outputs/archive/route_a_<run_id>.zip",
+            "```",
+            "",
+            "## 七、Boundary Statement",
         ]
+
+        if selected_pose is not None:
+            lines.extend(
+                [
+                    f"- selected_pose_id: {selected_pose.pose_id}",
+                    f"- selected_pose_score: {selected_pose.score}",
+                    f"- selected_pose_file: {selected_pose.pose_file}",
+                ]
+            )
 
         if scientific_validity == "placeholder_not_physical":
             lines.append(
@@ -264,7 +384,6 @@ class BindingWorkflow:
         output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         result.summary_metrics["route_a_summary_path"] = str(output_path)
         return output_path
-
     def run(self) -> BindingWorkflowResult:
         """执行完整案例二 workflow。"""
         manifest = self.build_manifest()
@@ -290,3 +409,4 @@ class BindingWorkflow:
             analysis_outputs=analysis_outputs,
         )
         return self.summarize(result)
+

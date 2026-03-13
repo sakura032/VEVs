@@ -2,27 +2,31 @@
 run_minimal_openmm_validation.py
 
 目的：
-1. 对 simulation_runner.py 做 minimum runnable validation。
+1. 对 `simulation_runner.py` 做 minimum runnable validation。
 2. 不经过 BindingWorkflow，直接测试 OpenMM 主链：
-   prepare_system -> minimize -> equilibrate -> production
+   prepare_system -> minimize -> equilibrate -> production。
 3. 仅支持 CPU / solution mode / toy peptide complex。
 4. 这是 engine validation，不是 scientific validation。
 """
 
+from __future__ import annotations
+
+import argparse
+from datetime import datetime
 from pathlib import Path
 import sys
 import traceback
 
 
-# 允许从项目根目录导入 src 包（python scripts/xxx.py 时默认路径是 scripts/）
+# 允许在直接 `python scripts/xxx.py` 时从项目根目录导入 `src` 包。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from openmm import app
 from src.configs import MDConfig, MembraneConfig, ProjectPaths, SystemConfig
 from src.interfaces.contracts import AssembledComplex, SimulationArtifacts
 from src.models.all_atom.simulation_runner import AllAtomSimulation, SimulationContext
-from openmm import app
 
 try:
     import MDAnalysis as mda
@@ -30,9 +34,48 @@ except ImportError:
     mda = None
 
 
-def build_paths(project_root: Path) -> ProjectPaths:
-    """构造项目路径对象并确保目录存在。"""
-    paths = ProjectPaths.from_root(project_root)
+def parse_args() -> argparse.Namespace:
+    """解析命令行参数（CLI arguments）。"""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run minimum runnable OpenMM validation "
+            "(prepare -> minimize -> equilibrate -> production)."
+        )
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Run identifier. Default: openmm_validation_YYYYmmdd_HHMMSS",
+    )
+    return parser.parse_args()
+
+
+def build_paths(project_root: Path, run_id: str) -> ProjectPaths:
+    """构造 run_id 隔离路径并确保目录存在。
+
+    输入：
+    - `project_root`: 项目根目录。
+    - `run_id`: 本次运行唯一标识。
+
+    输出：
+    - `ProjectPaths`，其中：
+      - `work_dir = work/runs/<run_id>`
+      - `output_dir = outputs/runs/<run_id>`
+
+    说明：
+    - 这样可以避免覆盖历史结果，满足 run_id 目录规范。
+    """
+    run_work_dir = project_root / "work" / "runs" / run_id
+    run_output_dir = project_root / "outputs" / "runs" / run_id
+    paths = ProjectPaths(
+        project_root=project_root,
+        data_dir=project_root / "data",
+        work_dir=run_work_dir,
+        output_dir=run_output_dir,
+        log_dir=run_output_dir / "logs",
+        report_dir=run_output_dir / "reports",
+    )
     paths.ensure_dirs()
     return paths
 
@@ -49,7 +92,8 @@ def build_configs(project_root: Path) -> tuple[SystemConfig, MDConfig, MembraneC
     if not minimal_pdb.exists():
         raise FileNotFoundError(f"Test PDB not found: {minimal_pdb}")
 
-    # 说明：当前脚本不走 docking/workflow，但 SystemConfig 需要 receptor/ligand 两个字段；
+    # 说明：
+    # 当前脚本不走 docking/workflow，但 SystemConfig 需要 receptor/ligand 字段。
     # 这里临时都指向同一个 minimal complex，作为 contract placeholder。
     system_config = SystemConfig(
         receptor_path=minimal_pdb,
@@ -95,7 +139,14 @@ def build_configs(project_root: Path) -> tuple[SystemConfig, MDConfig, MembraneC
 
 
 def prepare_clean_test_input(project_root: Path) -> Path:
-    """用 pdbfixer 对测试输入做最小预清洗，输出 clean PDB 路径。"""
+    """用 pdbfixer 做最小预清洗，写出 clean PDB。
+
+    输入：
+    - `data/test_systems/minimal_complex/minimal_complex.pdb`
+
+    输出：
+    - `data/test_systems/minimal_complex/minimal_complex_clean.pdb`
+    """
     raw_pdb = (
         project_root
         / "data"
@@ -165,7 +216,7 @@ def build_runner(
 
 
 def validate_outputs(artifacts: SimulationArtifacts) -> None:
-    """验证关键 artifacts 是否存在且非空。"""
+    """检查关键 artifacts 是否存在且非空。"""
     required = {
         "system_xml": artifacts.system_xml,
         "initial_state_xml": artifacts.initial_state_xml,
@@ -195,7 +246,7 @@ def validate_outputs(artifacts: SimulationArtifacts) -> None:
 
 
 def sanity_check_trajectory(artifacts: SimulationArtifacts) -> None:
-    """做轨迹 sanity check：确认 DCD 可读且帧数 > 0。"""
+    """尝试读取轨迹并做最小 sanity check（帧数 > 0）。"""
     if mda is None:
         print("MDAnalysis is not installed; skip trajectory sanity check.")
         return
@@ -212,10 +263,17 @@ def sanity_check_trajectory(artifacts: SimulationArtifacts) -> None:
 
 def main() -> None:
     """按固定顺序执行 minimum runnable validation。"""
+    args = parse_args()
     project_root = Path(__file__).resolve().parents[1]
-    print(f"Project root: {project_root}")
+    run_id = args.run_id or datetime.now().strftime("openmm_validation_%Y%m%d_%H%M%S")
 
-    paths = build_paths(project_root)
+    print(f"Project root: {project_root}")
+    print(f"Run ID: {run_id}")
+
+    paths = build_paths(project_root, run_id=run_id)
+    print(f"Work dir: {paths.work_dir}")
+    print(f"Output dir: {paths.output_dir}")
+
     system_config, md_config, membrane_config = build_configs(project_root)
     assembled = build_test_complex(project_root)
     runner = build_runner(paths, system_config, md_config, membrane_config)
@@ -243,3 +301,4 @@ if __name__ == "__main__":
         print(f"Validation failed: {exc}")
         traceback.print_exc()
         sys.exit(1)
+

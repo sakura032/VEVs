@@ -1,195 +1,148 @@
-# VEVs 结构导航（给第一次接手的搭档）
+﻿# VEVs Project Tree (Updated 2026-03-13)
 
-更新时间：2026-03-12  
-目标：一眼看懂“代码在哪里、谁负责什么、结果去哪里”
+目标：给首次接手同伴快速建立“目录-职责-入口-产物”的对应关系。
 
----
-
-## 1. 顶层目录速览
+## 1. Top-Level Tree
 
 ```text
 VEVs/
-├─ src/                  # 核心代码（分层架构）
-├─ scripts/              # 运行入口（Route A / OpenMM 验证）
-├─ tests/                # smoke 与接口回归测试
-├─ docs/                 # 架构与 I/O 说明文档
-├─ data/                 # 输入数据（示例结构）
-├─ work/                 # 过程产物（运行中间文件）
-├─ outputs/              # 结果产物（docking/analysis/report）
-├─ README.md             # 项目状态说明（实况）
-├─ TREE_3_12.md          # 本文件
-├─ casetwo.md            # 目标架构规范
-└─ deepresearch3_10.md   # 深度研究参考
+├─ src/
+│  ├─ configs/
+│  ├─ interfaces/
+│  ├─ models/
+│  │  ├─ all_atom/
+│  │  ├─ docking/
+│  │  └─ workflows/
+│  ├─ utils/
+│  └─ analysis/
+├─ scripts/
+│  ├─ cleanup_pytest_temp.sh
+│  ├─ run_binding_route_a.py
+│  └─ run_minimal_openmm_validation.py
+├─ tests/
+├─ docs/architecture/
+├─ data/
+├─ work/
+│  ├─ runs/<run_id>/
+│  └─ archive/legacy_*/
+├─ outputs/
+│  ├─ runs/<run_id>/
+│  └─ archive/legacy_*/
+├─ casetwo.md
+├─ deepresearch3_10.md
+├─ ONBOARDING.md
+└─ README.md
 ```
 
----
+## 2. Directory Responsibility
 
-## 2. `src/` 分层地图
+- `src/configs`：参数定义与校验。
+- `src/interfaces/contracts.py`：跨层 I/O 契约与 Protocol。
+- `src/models/workflows`：流程编排（orchestration）。
+- `src/models/all_atom`：OpenMM 执行（prepare/minimize/equilibrate/production）。
+- `src/models/docking`：docking 子模块（当前 backend 为 placeholder）。
+- `src/utils`：输入校验、预处理、组装。
+- `src/analysis`：轨迹分析与结果导出。
+- `work/runs/<run_id>`：过程产物。
+- `outputs/runs/<run_id>`：结果产物。
+
+## 3. Runtime Entrypoints
+
+1. Route A 主入口  
+`python scripts/run_binding_route_a.py --run-id <run_id> --receptor <pdb> --ligand <pdb>`
+
+2. OpenMM 主链验证入口  
+`python scripts/run_minimal_openmm_validation.py --run-id <run_id>`
+
+3. 关键回归  
+`python -m pytest -q -rs tests/test_route_a_workflow_smoke.py tests/test_run_manifest_smoke.py tests/test_binding_analyzer_smoke.py`
+
+## 4. New MD Artifacts (2026-03-13)
+
+在 `work/runs/<run_id>/md/` 新增：
+- `complex_fixed.pdb`（execution-layer PDBFixer post-fix）
+- `solvated.pdb`（加溶剂后初态结构锚点）
+
+在 `outputs/runs/<run_id>/metadata/` 新增：
+- `md_pdbfixer_report.json`（post-fix 报告）
+
+## 5. 输出结构对比（你要求的两个 TREE）
+
+### 5.1 `run_binding_route_a.py` 运行成功后的输出
 
 ```text
-src/
-├─ configs/
-│  ├─ system_config.py
-│  ├─ md_config.py
-│  ├─ docking_config.py
-│  ├─ free_energy_config.py
-│  └─ membrane_config.py
-│
-├─ interfaces/
-│  └─ contracts.py
-│
-├─ models/
-│  ├─ workflows/
-│  │  └─ binding_workflow.py
-│  ├─ all_atom/
-│  │  └─ simulation_runner.py
-│  └─ docking/
-│     ├─ pdb_utils.py
-│     ├─ scoring.py
-│     ├─ placeholder_engine.py
-│     └─ result_validation.py
-│
-├─ utils/
-│  ├─ structure_repository.py
-│  ├─ structure_preprocessor.py
-│  └─ complex_assembler.py
-│
-└─ analysis/
-   └─ binding_analyzer.py
+work/runs/<run_id>/
+├─ preprocessed/
+│  ├─ receptor_clean.pdb
+│  └─ ligand_prepared.pdb
+├─ assembled/
+│  └─ complex_initial.pdb
+└─ md/
+   ├─ complex_fixed.pdb
+   ├─ solvated.pdb
+   ├─ system.xml
+   ├─ state_init.xml
+   ├─ minimized.pdb
+   ├─ equil_nvt_last.pdb
+   ├─ equil_npt_last.pdb
+   ├─ production.dcd
+   ├─ md_log.csv
+   ├─ production.chk
+   └─ final_state.xml
 ```
-
-### 分层职责一句话
-
-- `configs`：定义参数空间和校验
-- `interfaces/contracts`：统一 I/O 契约和 Protocol 接口
-- `models/workflows`：只做 orchestration
-- `models/all_atom`：只做 OpenMM 执行
-- `models/docking`：docking 相关逻辑（当前 placeholder）
-- `utils`：输入校验、预处理、组装
-- `analysis`：轨迹/日志分析和结果导出
-
----
-
-## 3. 运行入口与用途
 
 ```text
-scripts/
-├─ run_binding_route_a.py
-└─ run_minimal_openmm_validation.py
+outputs/runs/<run_id>/
+├─ docking/
+│  ├─ poses.csv
+│  └─ poses/
+│     └─ pose_*.pdb
+├─ analysis/
+│  └─ binding/
+│     ├─ metrics.json
+│     ├─ rmsd.csv
+│     └─ figures/
+│        └─ rmsd.png
+├─ metadata/
+│  ├─ preprocess_report.json
+│  ├─ md_pdbfixer_report.json
+│  └─ run_manifest.json
+├─ reports/
+│  └─ route_a_summary.md
+└─ logs/
+   └─ (可能为空)
 ```
 
-- `run_binding_route_a.py`：当前主入口，走完整 Route A 最小闭环
-- `run_minimal_openmm_validation.py`：只验证 OpenMM 主链，不经过 workflow
-
----
-
-## 4. 流程顺序（docking 和 binding 的关系）
-
-`binding workflow` 包含 `docking`，但不等于 `docking`。
-
-执行顺序：
-
-1. validate input  
-2. preprocess  
-3. docking（产出 poses + score）  
-4. select pose  
-5. assemble complex  
-6. run MD（OpenMM）  
-7. analyze  
-8. summarize + report
-
----
-
-## 5. 输出目录规则（已切换为 run_id）
-
-### `work/`：过程产物
+### 5.2 `run_minimal_openmm_validation.py` 运行成功后的输出
 
 ```text
-work/
-├─ runs/
-│  └─ <run_id>/
-│     ├─ preprocessed/
-│     ├─ assembled/
-│     └─ md/
-└─ archive/
-   └─ legacy_20260310/
+work/runs/<run_id>/
+└─ md/
+   ├─ complex_fixed.pdb
+   ├─ solvated.pdb
+   ├─ system.xml
+   ├─ state_init.xml
+   ├─ minimized.pdb
+   ├─ equil_nvt_last.pdb
+   ├─ equil_npt_last.pdb
+   ├─ production.dcd
+   ├─ md_log.csv
+   ├─ production.chk
+   └─ final_state.xml
 ```
-
-### `outputs/`：结果产物
 
 ```text
-outputs/
-├─ runs/
-│  └─ <run_id>/
-│     ├─ docking/
-│     ├─ analysis/
-│     ├─ metadata/
-│     ├─ logs/
-│     └─ reports/
-└─ archive/
-   ├─ routeA_key_artifacts_20260310_185021.zip
-   └─ legacy_20260310/
+outputs/runs/<run_id>/
+├─ metadata/
+│  └─ md_pdbfixer_report.json
+├─ reports/
+│  └─ (通常为空)
+└─ logs/
+   └─ (通常为空)
 ```
 
-说明：
+### 5.3 两者差异总结（快速对照）
 
-- `runs/<run_id>/` 是当前唯一推荐路径，避免覆盖
-- `archive/legacy_*` 是历史根目录产物搬迁
-
----
-
-## 6. 关键文件看哪里
-
-### 想改接口
-
-- `src/interfaces/contracts.py`
-
-### 想改工作流步骤
-
-- `src/models/workflows/binding_workflow.py`
-
-### 想改 OpenMM 参数或阶段逻辑
-
-- `src/models/all_atom/simulation_runner.py`
-
-### 想改 docking 逻辑
-
-- `src/models/docking/placeholder_engine.py`
-- `src/models/docking/scoring.py`
-
-### 想改预处理/组装
-
-- `src/utils/structure_preprocessor.py`
-- `src/utils/complex_assembler.py`
-- `src/utils/structure_repository.py`
-
-### 想改分析输出
-
-- `src/analysis/binding_analyzer.py`
-
----
-
-## 7. 测试文件与覆盖点
-
-```text
-tests/
-├─ test_docking_placeholder_engine.py
-├─ test_structure_preprocessor_and_assembler.py
-├─ test_binding_analyzer_smoke.py
-├─ test_route_a_workflow_smoke.py
-└─ test_run_manifest_smoke.py
-```
-
-建议：这些测试保留，不要删。它们是后续改算法时防回归的最低保障。
-
----
-
-## 8. 当前边界（必须明确）
-
-当前结论边界：
-
-- placeholder docking 结果只用于工程链路验证
-- 不能当作真实物理/生物结论
-- membrane 与 umbrella 目前还没进入真实执行链
-
-如果你要继续写真实算法，优先从 backend 适配和分析严谨性入手，不要破坏现有分层。
+- `run_binding_route_a.py`：完整 workflow，包含 preprocessed/docking/analysis/summary 全链路产物。  
+- `run_minimal_openmm_validation.py`：只验证 OpenMM 主链，主要产物是 `work/.../md/*` + `outputs/.../metadata/md_pdbfixer_report.json`。  
+- 两者都遵守 run_id 规范：只写 `work/runs/<run_id>` 与 `outputs/runs/<run_id>`。

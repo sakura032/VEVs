@@ -60,6 +60,9 @@ class SystemConfig:
     pressure_bar: float = 1.0
     ionic_strength_molar: float = 0.15
     ph: float = 7.4
+    # 是否允许在 execution 层将 nonstandard residues 替换为标准残基。
+    # 默认 False，避免 silent mutation（静默突变）。
+    replace_nonstandard_residues: bool = False
     has_membrane: bool = False
     membrane_template_path: Optional[Path] = None
     metadata: dict[str, str] = field(default_factory=dict)
