@@ -1161,8 +1161,7 @@ Route A 的价值不是“够用”，而是它能用更小的系统先验证以
 2. 路线A可以升级为路线B，但前提是 A 从第一天起就必须是 **membrane-ready architecture**，而不能是 solution-only dead end。
 3. `BindingWorkflow` 应是案例二入口，`AllAtomSimulation` 应是唯一 AA-MD 执行核心，`UmbrellaSamplingWorkflow` 与 `MembraneAnalyzer` 则是高层分析与机制工具。
 4. Endpoint FE 与 PMF 不是重复劳动，而是不同证据层级；先做 endpoint ranking，再做 umbrella sampling 才是合理顺序。
-5. 当前代码中的 `run_openmm()`、`run_md()`、`calculate_binding_free_energy()`、`calculate_thickness()` 等函数大量仍是 placeholder 或示例随机逻辑，不能直接支撑真实结论。fileciteturn2file11turn2file1turn2file5turn2file6
-
+5. 当前代码中的 `run_openmm()`、`run_md()`、`calculate_binding_free_energy()`、`calculate_thickness()` 等函数大量仍是 placeholder 或示例随机逻辑，不能直接支撑真实结论。
 ---
 
 ## 14. 下一步建议（Immediate Next Step）

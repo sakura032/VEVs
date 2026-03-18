@@ -34,6 +34,38 @@ from src.models.workflows import BindingWorkflow, BindingWorkflowContext
 from src.utils import ComplexAssembler, StructurePreprocessor, StructureRepository
 
 
+def resolve_input_pdb(project_root: Path, raw_path: str | Path) -> Path:
+    """
+    Resolve user-provided receptor/ligand path with data-relative convenience.
+
+    Accepted forms:
+    - absolute path
+    - project-root relative path (for example: data/test_systems/xxx.pdb)
+    - data-dir relative path (for example: test_systems/test_3_15/receptor_one.pdb)
+    """
+    path = Path(raw_path)
+    if path.is_absolute():
+        resolved = path.resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Input PDB not found: {resolved}")
+        return resolved
+
+    candidates = [
+        (project_root / path).resolve(),
+        (project_root / "data" / path).resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    candidate_text = "\n".join(f"- {candidate}" for candidate in candidates)
+    raise FileNotFoundError(
+        "Input PDB not found. Tried:\n"
+        f"{candidate_text}\n"
+        f"raw input: {raw_path}"
+    )
+
+
 def build_paths(project_root: Path, run_id: str) -> ProjectPaths:
     run_work_dir = project_root / "work" / "runs" / run_id
     run_output_dir = project_root / "outputs" / "runs" / run_id
@@ -141,15 +173,21 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run minimum Route A binding workflow")
     parser.add_argument(
         "--receptor",
-        type=Path,
-        default=PROJECT_ROOT / "data" / "test_systems" / "minimal_complex" / "minimal_complex.pdb",
-        help="Path to receptor PDB",
+        type=str,
+        default="test_systems/test_3_15/receptor_one.pdb",
+        help=(
+            "Receptor PDB path. Supports absolute path, project-root relative path, "
+            "or data-dir relative path."
+        ),
     )
     parser.add_argument(
         "--ligand",
-        type=Path,
-        default=PROJECT_ROOT / "data" / "test_systems" / "minimal_complex" / "minimal_complex.pdb",
-        help="Path to ligand PDB (minimum route allows placeholder same as receptor)",
+        type=str,
+        default="test_systems/test_3_15/ligand_one.pdb",
+        help=(
+            "Ligand PDB path. Supports absolute path, project-root relative path, "
+            "or data-dir relative path."
+        ),
     )
     parser.add_argument(
         "--run-id",
@@ -162,9 +200,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    receptor = args.receptor.resolve()
-    ligand = args.ligand.resolve()
     project_root = PROJECT_ROOT
+    receptor = resolve_input_pdb(project_root, args.receptor)
+    ligand = resolve_input_pdb(project_root, args.ligand)
     run_id = args.run_id or datetime.now().strftime("routeA_%Y%m%d_%H%M%S")
 
     paths = build_paths(project_root, run_id=run_id)

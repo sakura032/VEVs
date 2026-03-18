@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 import json
@@ -25,10 +25,14 @@ class StructurePreprocessor(StructurePreprocessorProtocol):
         receptor_report = self._clean_pdb(
             input_path=manifest.receptor_path,
             output_path=receptor_clean,
+            role="receptor",
+            remove_heterogens=True,
         )
         ligand_report = self._clean_pdb(
             input_path=manifest.ligand_path,
             output_path=ligand_prepared,
+            role="ligand",
+            remove_heterogens=False,
         )
 
         report = {
@@ -46,7 +50,13 @@ class StructurePreprocessor(StructurePreprocessorProtocol):
             preprocess_report=report_path,
         )
 
-    def _clean_pdb(self, input_path: Path, output_path: Path) -> dict[str, str | int]:
+    def _clean_pdb(
+        self,
+        input_path: Path,
+        output_path: Path,
+        role: str,
+        remove_heterogens: bool,
+    ) -> dict[str, str | int | bool]:
         if input_path.suffix.lower() != ".pdb":
             raise ValueError(
                 f"Minimum Route A preprocessor currently supports .pdb only: {input_path}"
@@ -63,7 +73,9 @@ class StructurePreprocessor(StructurePreprocessorProtocol):
             ) from exc
 
         fixer = PDBFixer(filename=str(input_path))
-        fixer.removeHeterogens(keepWater=self.keep_water)
+        # Receptor removes heterogens by default; ligand must keep HETATM records.
+        if remove_heterogens:
+            fixer.removeHeterogens(keepWater=self.keep_water)
         fixer.findMissingResidues()
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
@@ -75,8 +87,10 @@ class StructurePreprocessor(StructurePreprocessorProtocol):
         return {
             "input": str(input_path.resolve()),
             "output": str(output_path.resolve()),
+            "role": role,
+            "remove_heterogens": remove_heterogens,
+            "keep_water": self.keep_water,
             "num_missing_residues_groups": len(fixer.missingResidues),
             "num_missing_atoms_residues": len(fixer.missingAtoms),
             "num_missing_terminals_residues": len(fixer.missingTerminals),
         }
-

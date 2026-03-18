@@ -1,12 +1,13 @@
-"""
+﻿"""
 run_minimal_openmm_validation.py
 
-目的：
-1. 对 `simulation_runner.py` 做 minimum runnable validation。
-2. 不经过 BindingWorkflow，直接测试 OpenMM 主链：
-   prepare_system -> minimize -> equilibrate -> production。
-3. 仅支持 CPU / solution mode / toy peptide complex。
-4. 这是 engine validation，不是 scientific validation。
+Minimum runnable OpenMM validation entry.
+
+This script validates the AA-MD engine path directly:
+prepare_system -> minimize -> equilibrate -> production
+
+It intentionally bypasses BindingWorkflow orchestration and is not a scientific
+claim workflow.
 """
 
 from __future__ import annotations
@@ -17,16 +18,16 @@ from pathlib import Path
 import sys
 import traceback
 
-
-# 允许在直接 `python scripts/xxx.py` 时从项目根目录导入 `src` 包。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from openmm import app
+
 from src.configs import MDConfig, MembraneConfig, ProjectPaths, SystemConfig
 from src.interfaces.contracts import AssembledComplex, SimulationArtifacts
 from src.models.all_atom.simulation_runner import AllAtomSimulation, SimulationContext
+from src.models.docking.pdb_utils import read_pdb_atoms, write_complex_pdb
 
 try:
     import MDAnalysis as mda
@@ -34,11 +35,42 @@ except ImportError:
     mda = None
 
 
+def resolve_input_pdb(project_root: Path, raw_path: str | Path) -> Path:
+    """
+    Resolve receptor/ligand input path.
+
+    Accepted forms:
+    - absolute path
+    - project-root relative path
+    - data-dir relative path
+    """
+    path = Path(raw_path)
+    if path.is_absolute():
+        resolved = path.resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Input PDB not found: {resolved}")
+        return resolved
+
+    candidates = [
+        (project_root / path).resolve(),
+        (project_root / "data" / path).resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    candidate_text = "\n".join(f"- {candidate}" for candidate in candidates)
+    raise FileNotFoundError(
+        "Input PDB not found. Tried:\n"
+        f"{candidate_text}\n"
+        f"raw input: {raw_path}"
+    )
+
+
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数（CLI arguments）。"""
     parser = argparse.ArgumentParser(
         description=(
-            "Run minimum runnable OpenMM validation "
+            "Run minimum OpenMM validation "
             "(prepare -> minimize -> equilibrate -> production)."
         )
     )
@@ -48,24 +80,28 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Run identifier. Default: openmm_validation_YYYYmmdd_HHMMSS",
     )
+    parser.add_argument(
+        "--receptor",
+        type=str,
+        default="test_systems/test_3_15/receptor_one.pdb",
+        help=(
+            "Receptor PDB path. Supports absolute path, project-root relative path, "
+            "or data-dir relative path."
+        ),
+    )
+    parser.add_argument(
+        "--ligand",
+        type=str,
+        default="test_systems/test_3_15/ligand_one.pdb",
+        help=(
+            "Ligand PDB path. Supports absolute path, project-root relative path, "
+            "or data-dir relative path."
+        ),
+    )
     return parser.parse_args()
 
 
 def build_paths(project_root: Path, run_id: str) -> ProjectPaths:
-    """构造 run_id 隔离路径并确保目录存在。
-
-    输入：
-    - `project_root`: 项目根目录。
-    - `run_id`: 本次运行唯一标识。
-
-    输出：
-    - `ProjectPaths`，其中：
-      - `work_dir = work/runs/<run_id>`
-      - `output_dir = outputs/runs/<run_id>`
-
-    说明：
-    - 这样可以避免覆盖历史结果，满足 run_id 目录规范。
-    """
     run_work_dir = project_root / "work" / "runs" / run_id
     run_output_dir = project_root / "outputs" / "runs" / run_id
     paths = ProjectPaths(
@@ -80,24 +116,13 @@ def build_paths(project_root: Path, run_id: str) -> ProjectPaths:
     return paths
 
 
-def build_configs(project_root: Path) -> tuple[SystemConfig, MDConfig, MembraneConfig]:
-    """构造最小验证配置（minimum runnable validation configs）。"""
-    minimal_pdb = (
-        project_root
-        / "data"
-        / "test_systems"
-        / "minimal_complex"
-        / "minimal_complex.pdb"
-    )
-    if not minimal_pdb.exists():
-        raise FileNotFoundError(f"Test PDB not found: {minimal_pdb}")
-
-    # 说明：
-    # 当前脚本不走 docking/workflow，但 SystemConfig 需要 receptor/ligand 字段。
-    # 这里临时都指向同一个 minimal complex，作为 contract placeholder。
+def build_configs(
+    receptor_path: Path,
+    ligand_path: Path,
+) -> tuple[SystemConfig, MDConfig, MembraneConfig]:
     system_config = SystemConfig(
-        receptor_path=minimal_pdb,
-        ligand_path=minimal_pdb,
+        receptor_path=receptor_path,
+        ligand_path=ligand_path,
         forcefield_name="amber14sb",
         water_model="tip3p",
         temperature_kelvin=300.0,
@@ -138,33 +163,12 @@ def build_configs(project_root: Path) -> tuple[SystemConfig, MDConfig, MembraneC
     return system_config, md_config, membrane_config
 
 
-def prepare_clean_test_input(project_root: Path) -> Path:
-    """用 pdbfixer 做最小预清洗，写出 clean PDB。
-
-    输入：
-    - `data/test_systems/minimal_complex/minimal_complex.pdb`
-
-    输出：
-    - `data/test_systems/minimal_complex/minimal_complex_clean.pdb`
-    """
-    raw_pdb = (
-        project_root
-        / "data"
-        / "test_systems"
-        / "minimal_complex"
-        / "minimal_complex.pdb"
-    )
-    clean_pdb = (
-        project_root
-        / "data"
-        / "test_systems"
-        / "minimal_complex"
-        / "minimal_complex_clean.pdb"
-    )
-
-    if not raw_pdb.exists():
-        raise FileNotFoundError(f"Test PDB not found: {raw_pdb}")
-
+def clean_component_pdb(
+    input_pdb: Path,
+    output_pdb: Path,
+    remove_heterogens: bool,
+) -> None:
+    """Clean one component with role-specific heterogen handling."""
     try:
         from pdbfixer import PDBFixer
     except ImportError as exc:
@@ -172,28 +176,54 @@ def prepare_clean_test_input(project_root: Path) -> Path:
             "pdbfixer is required for test-input cleaning but is not installed."
         ) from exc
 
-    fixer = PDBFixer(filename=str(raw_pdb))
-    fixer.removeHeterogens(keepWater=False)
+    fixer = PDBFixer(filename=str(input_pdb))
+    if remove_heterogens:
+        fixer.removeHeterogens(keepWater=False)
     fixer.findMissingResidues()
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
 
-    clean_pdb.parent.mkdir(parents=True, exist_ok=True)
-    with open(clean_pdb, "w", encoding="utf-8") as handle:
+    output_pdb.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_pdb, "w", encoding="utf-8") as handle:
         app.PDBFile.writeFile(fixer.topology, fixer.positions, handle)
 
-    return clean_pdb
 
+def build_test_complex(
+    paths: ProjectPaths,
+    receptor_path: Path,
+    ligand_path: Path,
+) -> AssembledComplex:
+    prep_dir = paths.work_dir / "validation_inputs"
+    receptor_clean = prep_dir / "receptor_validation_clean.pdb"
+    ligand_prepared = prep_dir / "ligand_validation_prepared.pdb"
 
-def build_test_complex(project_root: Path) -> AssembledComplex:
-    """构造 solution mode 的最小 AssembledComplex。"""
-    minimal_pdb = prepare_clean_test_input(project_root)
+    clean_component_pdb(
+        input_pdb=receptor_path,
+        output_pdb=receptor_clean,
+        remove_heterogens=True,
+    )
+    clean_component_pdb(
+        input_pdb=ligand_path,
+        output_pdb=ligand_prepared,
+        remove_heterogens=False,
+    )
+
+    receptor_atoms = read_pdb_atoms(receptor_clean)
+    ligand_atoms = read_pdb_atoms(ligand_prepared)
+
+    complex_pdb = paths.work_dir / "assembled" / "complex_validation_initial.pdb"
+    write_complex_pdb(receptor_atoms, ligand_atoms, complex_pdb)
+
     return AssembledComplex(
-        complex_structure=minimal_pdb,
+        complex_structure=complex_pdb,
         mode="solution",
         metadata={
             "purpose": "minimum_runnable_validation",
-            "system_type": "toy_peptide_complex",
+            "system_type": "protein_ligand_complex",
+            "receptor_input": str(receptor_path),
+            "ligand_input": str(ligand_path),
+            "receptor_clean": str(receptor_clean),
+            "ligand_prepared": str(ligand_prepared),
             "note": "Not for scientific interpretation",
         },
     )
@@ -205,7 +235,6 @@ def build_runner(
     md_config: MDConfig,
     membrane_config: MembraneConfig,
 ) -> AllAtomSimulation:
-    """构造 SimulationContext 和 AllAtomSimulation。"""
     context = SimulationContext(
         system_config=system_config,
         md_config=md_config,
@@ -216,7 +245,6 @@ def build_runner(
 
 
 def validate_outputs(artifacts: SimulationArtifacts) -> None:
-    """检查关键 artifacts 是否存在且非空。"""
     required = {
         "system_xml": artifacts.system_xml,
         "initial_state_xml": artifacts.initial_state_xml,
@@ -246,7 +274,6 @@ def validate_outputs(artifacts: SimulationArtifacts) -> None:
 
 
 def sanity_check_trajectory(artifacts: SimulationArtifacts) -> None:
-    """尝试读取轨迹并做最小 sanity check（帧数 > 0）。"""
     if mda is None:
         print("MDAnalysis is not installed; skip trajectory sanity check.")
         return
@@ -262,20 +289,24 @@ def sanity_check_trajectory(artifacts: SimulationArtifacts) -> None:
 
 
 def main() -> None:
-    """按固定顺序执行 minimum runnable validation。"""
     args = parse_args()
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = PROJECT_ROOT
     run_id = args.run_id or datetime.now().strftime("openmm_validation_%Y%m%d_%H%M%S")
+
+    receptor = resolve_input_pdb(project_root, args.receptor)
+    ligand = resolve_input_pdb(project_root, args.ligand)
 
     print(f"Project root: {project_root}")
     print(f"Run ID: {run_id}")
+    print(f"Receptor input: {receptor}")
+    print(f"Ligand input: {ligand}")
 
     paths = build_paths(project_root, run_id=run_id)
     print(f"Work dir: {paths.work_dir}")
     print(f"Output dir: {paths.output_dir}")
 
-    system_config, md_config, membrane_config = build_configs(project_root)
-    assembled = build_test_complex(project_root)
+    system_config, md_config, membrane_config = build_configs(receptor, ligand)
+    assembled = build_test_complex(paths, receptor, ligand)
     runner = build_runner(paths, system_config, md_config, membrane_config)
 
     artifacts = runner.run_full_protocol(assembled=assembled, run_production=True)
@@ -301,4 +332,3 @@ if __name__ == "__main__":
         print(f"Validation failed: {exc}")
         traceback.print_exc()
         sys.exit(1)
-
