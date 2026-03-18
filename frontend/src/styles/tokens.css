@@ -1,0 +1,60 @@
+:root {
+  --font-sans: Inter, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --bg-canvas: #f5f7fa;
+  --bg-panel: #ffffff;
+  --bg-subtle: #eef2f7;
+  --bg-scene: #f1f4f9;
+
+  --border-default: #d8e0ea;
+  --border-strong: #c1ccd9;
+
+  --text-primary: #16202a;
+  --text-secondary: #4c5b6a;
+  --text-muted: #738396;
+
+  --accent-blue: #2f6fed;
+  --accent-cyan: #28b7c8;
+  --accent-receptor: #4f6d8a;
+  --accent-ligand: #2a927a;
+  --accent-water: #5f7fa0;
+  --accent-unresolved: #c84b31;
+  --accent-selected: #2e8b57;
+
+  --element-carbon: #6f7e8e;
+  --element-nitrogen: #2f6fed;
+  --element-oxygen: #c84b31;
+  --element-sulfur: #c99000;
+  --element-phosphorus: #ad6f17;
+  --element-hydrogen: #d7dee8;
+  --element-metal: #9b6ad4;
+
+  --status-success: #2e8b57;
+  --status-warning: #c99000;
+  --status-danger: #c84b31;
+  --status-info: #2f6fed;
+  --status-reserved: #6f7e8e;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-xxl: 40px;
+
+  --radius-card: 16px;
+  --radius-control: 10px;
+  --radius-pill: 999px;
+
+  --shadow-panel: 0 6px 16px rgba(22, 32, 42, 0.06);
+
+  --line-tight: 1.25;
+  --line-base: 1.45;
+
+  --page-title-size: 28px;
+  --section-title-size: 18px;
+  --card-title-size: 15px;
+  --body-size: 14px;
+  --caption-size: 12px;
+}

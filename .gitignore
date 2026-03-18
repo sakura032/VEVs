@@ -48,6 +48,14 @@ copilot-messages.log
 .DS_Store
 .project/attachments/files/**
 
+# Python cache artifacts
+**/__pycache__/
+*.pyc
+*.pyo
+
+# IDE local settings
+.vscode/
+
 # keep empty directory structure for work/ and outputs/
 work/**
 !work/.gitkeep
@@ -65,3 +73,10 @@ outputs/**
 
 # generated local clean test input
 /data/test_systems/minimal_complex/minimal_complex_clean.pdb
+data/test_systems/test_3_15/**
+
+# frontend visualization bundles (symlink-only runtime data)
+frontend/visualization/**
+!frontend/visualization/.gitkeep
+frontend/public/visualization/**
+!frontend/public/visualization/.gitkeep
