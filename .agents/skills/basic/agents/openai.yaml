@@ -1,0 +1,7 @@
+interface:
+  display_name: "Basic"
+  short_description: "仅用于 vesicle 建模"
+  default_prompt: "请使用 basic skill：只读取 vesicle 目录;参数或外部资源相关改动先核对官方来源并注明依据；代码写详细中文注释；改动后先问我是否需要飞书总结。"
+
+policy:
+  allow_implicit_invocation: false

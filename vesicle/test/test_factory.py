@@ -1,27 +1,25 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 import numpy as np
 
-# 把仓库根目录加入 sys.path，保证脚本可直接通过
-# `python vesicle/test/test_factory.py` 运行。
+# 让测试脚本可以通过 `python vesicle/test/test_factory.py` 直接运行。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from vesicle.models.coarse_grained.lipid import LIPID_LIBRARY
-from vesicle.utils.lipid_factory import build_lipid_3d
+from vesicle.models.lipid import LIPID_LIBRARY, build_lipid_3d
 
 
 def _compute_anchor_center(lipid_3d, anchors):
     """
-    计算某组锚点在当前坐标系下的几何中心。
+    计算指定锚点组在当前坐标中的几何中心。
 
-    这个函数用于测试“平移是否正确”：
-    - 理论上，build_lipid_3d 已经把头部中心平移到 (0, 0, 0)。
-    - 因此这里计算 head_anchors 的中心，结果应非常接近零向量。
+    该函数用于验证“头部归一到原点”是否生效：
+    - build_lipid_3d 会执行 coords -= head_center。
+    - 因此 head_anchors 的中心应该接近 [0, 0, 0]。
     """
     anchor_indices = [lipid_3d.bead_names.index(anchor) for anchor in anchors]
     return np.mean(lipid_3d.coords[anchor_indices], axis=0)
@@ -29,17 +27,11 @@ def _compute_anchor_center(lipid_3d, anchors):
 
 def main() -> None:
     """
-    最小工厂测试（smoke test）。
+    phase1 personB 的脂质工厂烟雾测试（smoke test）。
 
     覆盖目标：
-    1. POPC：验证 .gro 文件解析路径。
-    2. CHOL：验证硬编码构象路径。
-
-    输出重点：
-    - 坐标矩阵 shape 是否合理。
-    - 方向向量是否为单位向量。
-    - 头部中心是否回到原点。
-    - z 分量是否符合“头在上、尾向下（通常为负 z）”的直觉。
+    - POPC: 验证 .gro 文件读取路径。
+    - CHOL: 验证硬编码构象路径。
     """
     print("=== Lipid Factory Smoke Test ===")
 
@@ -70,3 +62,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
