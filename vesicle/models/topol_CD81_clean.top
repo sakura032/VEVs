@@ -1,0 +1,9 @@
+
+#include "martini.itp"
+#include "CD81_0.itp"
+
+[ system ]
+Title of the system
+
+[ molecules ]
+CD81_0    1
