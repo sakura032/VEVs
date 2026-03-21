@@ -80,3 +80,6 @@ frontend/visualization/**
 !frontend/visualization/.gitkeep
 frontend/public/visualization/**
 !frontend/public/visualization/.gitkeep
+
+
+vesicle/scripts/**
