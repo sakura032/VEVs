@@ -1,61 +1,112 @@
+"""
+geometry.py
+几何工具模块 - 用于粗粒度囊泡模拟中的点云生成与分子对齐
+
+本模块主要负责两件事：
+1. 生成高均匀性的球面点云（Fibonacci 螺旋算法），作为脂质/蛋白的候选放置位置
+2. 将单个或批量脂质模板对齐到球面特定点，并根据内外叶需求自动翻转方向
+
+设计原则：
+- 所有坐标统一使用 nm 单位（与 MARTINI .gro 文件一致）
+- 输入校验严格（防止 NaN/Inf/形状错误传播）
+- 旋转计算优先使用 scipy.spatial.transform.Rotation 的高级接口（更鲁棒）
+- 浮点安全阈值（EPS）用于处理奇点和数值不稳定
+- 支持单分子和批量操作（实际构建囊泡时批量性能更重要）
+
+使用注意：
+- 脂质模板假设头部珠子已在坐标原点附近（通常在 lipid.py 中完成预处理）
+- 向上向量 (lipid_up_vector) 应为从头部指向尾部的单位向量（脂质的“朝向”）
+- 内外叶翻转逻辑：外叶尾巴朝球心（-normal），内叶尾巴背离球心（+normal）
+
+后续可扩展方向：
+- 支持蛋白对齐（需要额外参数：跨膜区识别、旋转自由度限制）
+- 加碰撞检测接口（结合 KDTree 排除重叠位置）
+- 支持非均匀点云（例如偏向赤道或极区）
+"""
+
 from __future__ import annotations
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+from typing import Union, Tuple
 
+# ────────────────────────────────────────────────
+# 浮点安全阈值（全局常量）
+# ────────────────────────────────────────────────
+# EPS_NORM：向量模长阈值，小于此值视为“零向量”，用于避免除零或数值不稳定
+# EPS_ANGLE：角度奇点阈值，用于判断是否接近 0° 或 180°（叉积退化情况）
+EPS_NORM   = 1e-12
+EPS_ANGLE  = 1e-6
 
-# 浮点安全阈值：
-# - EPS_VECTOR 用于判断向量范数是否接近 0，避免除以 0。
-# - EPS_ANGLE 用于判断旋转角是否接近 0 或接近 π，处理旋转奇点。
-EPS_VECTOR = 1e-12
-EPS_ANGLE = 1e-6
-
-
-def _as_vec3(name: str, value: np.ndarray) -> np.ndarray:
-    """
-    将输入安全转换为 shape=(3,) 的 float64 向量。
-
-    设计目的：
-    1. 统一所有几何计算输入类型，避免 list/tuple/float32 混用导致隐式精度问题。
-    2. 先做形状与有限性检查，确保后续线性代数过程不会出现 NaN/Inf 污染。
-    """
-    vec = np.asarray(value, dtype=np.float64)
-    if vec.shape != (3,):
-        raise ValueError(f"参数 {name} 必须是形状为 (3,) 的向量，当前为 {vec.shape}")
-    if not np.all(np.isfinite(vec)):
-        raise ValueError(f"参数 {name} 含有非有限值（NaN 或 Inf）")
-    return vec
-
-
-def _as_coords(name: str, coords: np.ndarray) -> np.ndarray:
-    """
-    将输入安全转换为 shape=(N,3) 的 float64 坐标矩阵。
-
-    设计目的：
-    - 明确几何变换函数只接受三维点云，避免一维数组或错误列数导致的隐式广播错误。
-    """
-    arr = np.asarray(coords, dtype=np.float64)
-    if arr.ndim != 2 or arr.shape[1] != 3:
-        raise ValueError(f"参数 {name} 必须是形状为 (N, 3) 的矩阵，当前为 {arr.shape}")
-    if not np.all(np.isfinite(arr)):
-        raise ValueError(f"参数 {name} 含有非有限值（NaN 或 Inf）")
-    return arr
-
-
-def _normalize(name: str, vec: np.ndarray, eps: float = EPS_VECTOR) -> np.ndarray:
+def _normalize(name: str, vec: np.ndarray, eps: float = EPS_NORM) -> np.ndarray:
     """
     将向量归一化为单位向量。
 
-    数学意义：
-    - 将方向信息与长度信息分离，后续旋转算法（点乘、叉乘、夹角）都依赖单位向量。
+    参数:
+        name : 用于报错的变量名
+        vec  : 输入向量 (shape=(3,))
+        eps  : 最小模长阈值（防止除零）
 
-    数值安全：
-    - 当范数过小（接近 0）时，归一化会出现除 0 风险，因此直接抛出异常。
+    返回:
+        归一化后的单位向量
+
+    异常:
+        ValueError: 如果向量模长过小或非有限
     """
     norm = np.linalg.norm(vec)
     if not np.isfinite(norm) or norm < eps:
         raise ValueError(f"参数 {name} 的范数过小或非法（norm={norm}），无法归一化")
     return vec / norm
+
+def _as_vec3(name: str, v: np.ndarray) -> np.ndarray:
+    """
+    安全地将输入转换为 shape=(3,) 的 float64 向量。
+
+    作用：
+    1. 统一所有几何计算的输入类型，避免 list/tuple/int/float32 等混用导致广播错误或精度丢失
+    2. 强制检查形状和数值有效性（非有限值会提前抛异常，防止后续计算污染 NaN/Inf）
+
+    参数：
+        name   : 用于报错时显示的变量名（调试友好）
+        v      : 输入向量（支持 list/tuple/array/scalar）
+
+    返回：
+        shape=(3,) 的 float64 向量
+
+    异常：
+        ValueError: 形状不对或含有 NaN/Inf
+    """
+    arr = np.asarray(v, dtype=np.float64)
+    if arr.shape != (3,):
+        raise ValueError(f"{name} 必须是形状为 (3,) 的向量，实际得到 {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} 含有非有限值 (NaN 或 Inf): {arr}")
+    return arr
+
+
+def _as_coords(name: str, coords: np.ndarray) -> np.ndarray:
+    """
+    安全地将输入转换为 shape=(N,3) 的 float64 坐标矩阵。
+
+    作用：
+    确保所有点云输入都是正确的三维坐标矩阵，避免维度错误导致隐式广播或计算错误。
+
+    参数：
+        name   : 变量名（报错用）
+        coords : 输入坐标（支持 list/array）
+
+    返回：
+        shape=(N,3) 的 float64 矩阵
+
+    异常：
+        ValueError: 维度不对或含有 NaN/Inf
+    """
+    arr = np.asarray(coords, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"{name} 必须是形状为 (N, 3) 的坐标矩阵，实际得到 {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} 含有非有限值 (NaN 或 Inf)")
+    return arr
 
 
 def generate_fibonacci_sphere(
@@ -64,133 +115,181 @@ def generate_fibonacci_sphere(
     center: np.ndarray = np.array([0.0, 0.0, 0.0]),
 ) -> np.ndarray:
     """
-    生成高均匀性的 Fibonacci 球面点云。
+    生成高均匀性的 Fibonacci 螺旋球面点云。
+
+    算法原理：
+    - 使用黄金分割螺旋（Golden Spiral）在单位球面上均匀分布点
+    - z 坐标采用偏移采样：z = 1 - 2*(i + 0.5)/N，避免南北极点堆积
+    - 经度角使用黄金角增量：theta = π * (3 - √5) * i
+    - 最后缩放到目标半径并平移到指定球心
 
     参数：
-    - radius: 球半径（单位由调用方决定，例如 nm）。
-    - num_points: 点数 N。
-    - center: 球心坐标，shape=(3,)。
+        radius     : 球半径（单位 nm，与 MARTINI .gro 一致）
+        num_points : 生成的点数（建议 1000~50000，根据囊泡大小）
+        center     : 球心坐标，shape=(3,)
 
     返回：
-    - shape=(N,3) 的点云数组。
+        shape=(num_points, 3) 的点云坐标数组（float64）
 
-    底层算法说明：
-    1. 使用黄金分割螺旋（Golden Spiral）在单位球面上撒点。
-    2. 使用 z 的 0.5 偏移补偿：
-       z = 1 - 2*(i+0.5)/N
-       这一步可以显著减少南北极区域过密的离散误差。
-    3. 极角使用黄金角增量：
-       theta = pi*(3-sqrt(5))*i
-    4. 将单位球点缩放到目标半径，并平移到 center。
+    注意：
+        - 点数越多，均匀性越好，但计算量也越大
+        - 点数太少时极区仍可能略微不均（这是 Fibonacci 算法的固有特性）
     """
-    if not isinstance(num_points, (int, np.integer)) or num_points <= 0:
-        raise ValueError(f"num_points 必须是正整数，当前为 {num_points}")
+    # 参数校验
+    radius = float(radius)
+    if radius <= 0 or not np.isfinite(radius):
+        raise ValueError(f"radius 必须是正有限数，实际得到 {radius}")
 
-    radius_f = float(radius)
-    if not np.isfinite(radius_f) or radius_f < 0.0:
-        raise ValueError(f"radius 必须是有限且非负的实数，当前为 {radius}")
+    num_points = int(num_points)
+    if num_points <= 0:
+        raise ValueError(f"num_points 必须是正整数，实际得到 {num_points}")
 
-    center_vec = _as_vec3("center", center)
+    center = _as_vec3("center", center)
 
+    # 生成索引（从 0 到 num_points-1）
     i = np.arange(num_points, dtype=np.float64)
 
-    # 面积补偿 z 采样：避免点在极区堆积。
-    z = 1.0 - (2.0 * (i + 0.5)) / float(num_points)
+    # z 坐标：偏移 0.5 避免极点堆积
+    z = 1.0 - (2.0 * (i + 0.5)) / num_points
 
-    # 黄金角：相邻样本在经度方向的理想错位。
+    # 经度角：黄金角增量（≈ 137.508°）
     theta = np.pi * (3.0 - np.sqrt(5.0)) * i
 
-    # 在单位球上，横截面半径满足 r_xy = sqrt(1-z^2)。
-    # clip 是浮点护甲：防止 1-z^2 因舍入误差变成极小负数。
-    r_xy = np.sqrt(np.clip(1.0 - z * z, 0.0, 1.0))
+    # xy 平面半径：sqrt(1 - z²)
+    r_xy = np.sqrt(np.maximum(1.0 - z * z, 0.0))  # 防止浮点误差导致负值
 
-    x = radius_f * r_xy * np.cos(theta)
-    y = radius_f * r_xy * np.sin(theta)
-    z_scaled = radius_f * z
+    # 笛卡尔坐标（单位球）
+    x = r_xy * np.cos(theta)
+    y = r_xy * np.sin(theta)
+    z_scaled = z
 
-    points = np.column_stack((x, y, z_scaled))
+    # 缩放到目标半径
+    points = radius * np.column_stack((x, y, z_scaled))
 
-    # 最后平移到目标球心。
-    return points + center_vec
+    # 平移到指定球心
+    return points + center
 
 
 def align_lipid_to_sphere(
-    coords: np.ndarray,
-    v_intrinsic: np.ndarray,
-    target_point: np.ndarray,
-    center: np.ndarray = np.array([0.0, 0.0, 0.0]),
-    is_inner_leaflet: bool = False,
+    lipid_coords: np.ndarray,
+    lipid_up_vector: np.ndarray,
+    target_position: np.ndarray,
+    sphere_center: np.ndarray = np.array([0.0, 0.0, 0.0]),
+    flip_for_inner: bool = False,
 ) -> np.ndarray:
     """
-    将脂质模板坐标旋转并平移到球面目标点，且自动处理旋转奇点。
+    将单个脂质模板对齐到球面目标点，并根据内外叶需求自动翻转方向。
+
+    核心逻辑：
+    1. 计算目标点的法向量 n = normalize(target_position - sphere_center)
+    2. 确定目标向上向量：
+       - 外叶：尾巴朝球心 → target_up = -n
+       - 内叶：尾巴背离球心 → target_up = +n
+    3. 使用 Rotation.align_vectors 将脂质模板的向上向量对齐到 target_up
+       （scipy 内部自动处理奇点，不需要手动分支处理 angle≈0/π）
+    4. 应用旋转 + 平移到目标位置
 
     参数：
-    - coords: 脂质模板坐标，shape=(N,3)。通常头部已在原点。
-    - v_intrinsic: 脂质模板固有方向（头->尾单位向量）。
-    - target_point: 目标放置点（球面上一点）。
-    - center: 球心。
-    - is_inner_leaflet:
-      - False: 外叶，要求尾巴指向球心。
-      - True: 内叶，要求尾巴背离球心。
+        lipid_coords     : 脂质模板坐标，shape=(N_lipid, 3)，头部应接近原点
+        lipid_up_vector  : 脂质模板的“向上”方向（通常头→尾），shape=(3,)
+        target_position  : 球面上的放置目标点，shape=(3,)
+        sphere_center    : 球心位置，shape=(3,)
+        flip_for_inner   : 是否为内叶（True=尾巴背离球心，False=尾巴朝球心）
 
     返回：
-    - 旋转+平移后的新坐标，shape=(N,3)。
+        对齐后的坐标，shape=(N_lipid, 3)
 
-    数学流程：
-    1. 算球面法线 n = (target_point-center)/||...||。
-    2. 根据膜叶确定目标尾向量 v_target：
-       外叶 -> -n，内叶 -> n。
-    3. 算夹角 angle = arccos(clip(dot(v_intrinsic, v_target), -1, 1))。
-    4. 处理奇点：
-       - angle≈0：无需旋转，直接平移。
-       - angle≈π：构造动态正交轴，避免叉积退化。
-    5. 常规情况使用 axis=cross(v_intrinsic, v_target) 归一化。
-    6. 用 Rotation.from_rotvec(axis*angle) 做旋转，再加 target_point 平移。
+    注意：
+        - 模板坐标假设头部已在原点附近（lipid.py 预处理完成）
+        - 如果模板原点不在头部，需先在 lipid.py 中平移
     """
-    coords_arr = _as_coords("coords", coords)
-    v_in = _normalize("v_intrinsic", _as_vec3("v_intrinsic", v_intrinsic))
-    target = _as_vec3("target_point", target_point)
-    center_vec = _as_vec3("center", center)
+    coords = _as_coords("lipid_coords", lipid_coords)
+    up_vec = _normalize("lipid_up_vector", _as_vec3("lipid_up_vector", lipid_up_vector))
+    target = _as_vec3("target_position", target_position)
+    center = _as_vec3("sphere_center", sphere_center)
 
-    radial_vec = target - center_vec
-    n = _normalize("target_point-center", radial_vec)
+    # 计算径向向量和单位法向量
+    radial = target - center
+    normal = _normalize("radial vector", radial)
 
-    # 外叶：尾巴朝球心；内叶：尾巴背离球心。
-    v_target = n if is_inner_leaflet else -n
+    # 确定目标向上方向
+    target_up = -normal if not flip_for_inner else normal
 
-    # 浮点护甲：clip 防止点乘略超 [-1,1] 导致 arccos 域错误。
-    dot_prod = float(np.dot(v_in, v_target))
-    dot_prod = float(np.clip(dot_prod, -1.0, 1.0))
-    angle = float(np.arccos(dot_prod))
+    # 使用 scipy 的高级接口对齐两个向量（自动处理奇点）
+    # align_vectors 返回 (rotation, rmsd)，我们只取 rotation
+    rotation, _ = Rotation.align_vectors(
+        a=target_up.reshape(1, -1),   # 目标方向 (1,3)
+        b=up_vec.reshape(1, -1)       # 模板方向 (1,3)
+    )
 
-    # 奇点 1：几乎无需旋转，直接平移。
-    if angle < EPS_ANGLE:
-        return coords_arr + target
+    # 应用旋转 + 平移到目标点
+    rotated = rotation.apply(coords)
+    aligned = rotated + target
 
-    # 奇点 2：接近 180° 反平行，cross(v_in, v_target) 近似 0，需构造正交轴。
-    if angle > np.pi - EPS_ANGLE:
-        helper = np.array([0.0, 1.0, 0.0], dtype=np.float64) if abs(v_in[0]) > 0.9 else np.array([1.0, 0.0, 0.0], dtype=np.float64)
-        axis = np.cross(v_in, helper)
-    else:
-        axis = np.cross(v_in, v_target)
-
-    axis_norm = np.linalg.norm(axis)
-
-    # 兜底保护：理论上奇点分支已避免退化，但仍加一层防护处理数值极端情况。
-    if axis_norm < EPS_VECTOR:
-        fallback_helper = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        axis = np.cross(v_in, fallback_helper)
-        axis_norm = np.linalg.norm(axis)
-        if axis_norm < EPS_VECTOR:
-            raise ValueError("旋转轴退化：无法构造稳定的旋转轴")
-
-    axis = axis / axis_norm
-
-    rotation = Rotation.from_rotvec(axis * angle)
-    rotated = rotation.apply(coords_arr)
-
-    # 输入模板默认头部在原点，因此加 target_point 后头部落在目标点。
-    return rotated + target
+    return aligned
 
 
-__all__ = ["generate_fibonacci_sphere", "align_lipid_to_sphere"]
+def align_lipids_batch(
+    lipid_coords: np.ndarray,
+    lipid_up_vector: np.ndarray,
+    target_positions: np.ndarray,
+    sphere_center: np.ndarray = np.array([0.0, 0.0, 0.0]),
+    flip_for_inner: bool = False,
+) -> np.ndarray:
+    """
+    批量将多个脂质模板对齐到多个球面位置（向量化实现，性能优化版）
+
+    适用场景：
+    - 一次性放置几千到几万个脂质分子（构建完整囊泡外/内叶）
+    - 避免 for 循环调用单分子版本导致性能瓶颈
+
+    参数：
+        lipid_coords      : 单脂质模板坐标 (N_lipid, 3)
+        lipid_up_vector   : 单脂质向上向量 (3,)
+        target_positions  : 多个目标点 (N_points, 3)
+        sphere_center     : 球心
+        flip_for_inner    : 是否内叶翻转
+
+    返回：
+        所有对齐后的坐标，shape=(N_points * N_lipid, 3)
+
+    实现细节：
+    - 使用广播将单个向上向量扩展到所有目标点
+    - Rotation.align_vectors 支持批量输入
+    - 最终 reshape 合并所有脂质坐标
+    """
+    coords = _as_coords("lipid_coords", lipid_coords)
+    up_vec = _normalize("lipid_up_vector", _as_vec3("lipid_up_vector", lipid_up_vector))
+    targets = _as_coords("target_positions", target_positions)
+    center = _as_vec3("sphere_center", sphere_center)
+
+    # 计算所有法向量并归一化
+    radials = targets - center
+    normals = np.apply_along_axis(_normalize, 1, radials)
+
+    # 目标向上向量（外叶 -normal，内叶 +normal）
+    target_ups = -normals if not flip_for_inner else normals
+
+    # 批量计算旋转（scipy 支持广播输入）
+    rotations, _ = Rotation.align_vectors(
+        a=target_ups,                          # (N_points, 3)
+        b=up_vec[None, :].repeat(len(targets), axis=0)  # (N_points, 3)
+    )
+
+    # 应用旋转（广播到所有脂质）
+    rotated = rotations.apply(
+        coords[None, :, :].repeat(len(targets), axis=0)  # (N_points, N_lipid, 3)
+    )
+
+    # 平移到各自目标点
+    aligned = rotated + targets[:, None, :]  # 广播到 (N_points, N_lipid, 3)
+
+    # 展平为 (N_points * N_lipid, 3)
+    return aligned.reshape(-1, 3)
+
+
+__all__ = [
+    "generate_fibonacci_sphere",
+    "align_lipid_to_sphere",
+    "align_lipids_batch",
+]
