@@ -1,13 +1,18 @@
 """
-Protein Utilities
-蛋白质工具模块 - 用于粗粒度囊泡模拟中的单分子模板处理
+vesicle.models.protein
+======================
 
-本文件主要提供：
-- `PROTEIN_CATEGORIES`：蛋白类别约束
-- `Protein`：单分子粗粒度蛋白模板数据类
-  - 支持从 MARTINI 粗粒度 `.gro` 加载坐标
-  - 自动计算几何属性：`radius`（挖洞半径）、`tm_center`（跨膜中心 Z）
-  - 提供 `shifted_to_tm_center()` 做 Z 对齐（只做平移）
+这个文件定义囊泡建模阶段使用的蛋白模板对象 `Protein`。
+
+这里的 Protein 不是“生物信息学意义上的全功能蛋白类”，
+而是一个专门服务于 coarse-grained 囊泡拼装的几何模板：
+
+- 负责从单分子 CG `.gro` 文件读取 bead 坐标；
+- 负责缓存放置时最常用的几何属性；
+- 负责把模板整理到适合球面放置的局部坐标系。
+
+上层 builder 只关心“蛋白已经准备好，可以被放到某个球面点上”。
+因此这里尽量把模板预处理封装干净。
 """
 
 from __future__ import annotations
@@ -18,35 +23,42 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 
+# 这里保留多个类别，是为了让后续模型有扩展余地。
+# 当前外泌体主链路实际只会稳定使用 `surface_transmembrane`。
 PROTEIN_CATEGORIES = {
-    "surface_transmembrane",  # 外表面跨膜蛋白（CD9, CD63, integrin 等）
-    "inner_associated",  # 内叶/腔内关联蛋白（ALIX, TSG101, Syntenin 等）
-    "luminal_soluble",  # 腔内可溶性货物（HSP70, GAPDH 等）
+    "surface_transmembrane",
+    "inner_associated",
+    "luminal_soluble",
 }
 
 
 @dataclass
 class Protein:
     """
-    单分子粗粒度蛋白模板（坐标与几何特征）
+    单个蛋白模板对象。
 
-    Person A 核心字段（必须有）：
-    - `name`
-    - `coords`: (N, 3) 粗粒度珠子坐标（nm）
-    - `radius`: 膜平面投影半径（挖洞用）
-    - `tm_center`: 跨膜区中心 Z 坐标（对齐用）
+    核心字段
+    --------
+    name
+        蛋白名，例如 `CD9`、`CD63`、`CD81`。
+    coords
+        shape=(N,3) 的 bead 坐标，单位为 nm。
+    radius
+        该蛋白在膜平面上的投影占位半径，用于局部防撞。
+    tm_center
+        近似跨膜中心的 z 坐标，用于把模板平到膜中面。
 
-    扩展字段用于工程化加载/记录（当前模拟逻辑不强依赖这些字段）。
+    设计原则
+    --------
+    这里不做复杂的蛋白拓扑推断，不尝试自动识别胞内外结构域。
+    当前只做“对 builder 真正有用”的几何预处理。
     """
 
     name: str
-    coords: np.ndarray = field(
-        default_factory=lambda: np.zeros((0, 3), dtype=float)
-    )  # (N, 3)
+    coords: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float64))
     radius: Optional[float] = None
     tm_center: Optional[float] = None
 
-    # 更完整的元信息（可选）
     category: str = "surface_transmembrane"
     pdb_file: Optional[Path] = None
     description: Optional[str] = None
@@ -54,28 +66,30 @@ class Protein:
     is_glycosylated: bool = False
     tm_helices: int = 0
 
-    # 可选：直接从 cg gro 加载模板
     cg_gro_file: Optional[Path] = None
     cg_top_file: Optional[Path] = None
     bead_types: List[str] = field(default_factory=list)
-
-    # 包围盒（用于碰撞检测/空间查询）
-    bounding_box: Optional[Tuple[np.ndarray, np.ndarray]] = None  # (min, max)
+    bounding_box: Optional[Tuple[np.ndarray, np.ndarray]] = None
 
     def __post_init__(self) -> None:
+        """统一做输入合法性检查，并在需要时自动加载 `.gro`。"""
         if self.category not in PROTEIN_CATEGORIES:
             raise ValueError(
-                f"Invalid protein category: {self.category}. "
-                f"Valid: {PROTEIN_CATEGORIES}"
+                f"Invalid protein category: {self.category}. Valid: {PROTEIN_CATEGORIES}"
             )
 
-        coords = np.asarray(self.coords, dtype=float)
+        coords = np.asarray(self.coords, dtype=np.float64)
         if coords.ndim != 2 or coords.shape[1] != 3:
-            raise ValueError(f"coords must be shape (N, 3), got {coords.shape}")
+            raise ValueError(f"coords must have shape (N, 3), got {coords.shape}")
+        if not np.all(np.isfinite(coords)):
+            raise ValueError("coords contains NaN or Inf")
         self.coords = coords
 
-        # 若提供 cg_gro_file 且 coords/bead_types 为空，则自动加载
-        if self.cg_gro_file is not None and (self.coords.size == 0 or len(self.bead_types) == 0):
+        # 如果用户只给了 `.gro` 路径，没有直接给 bead 坐标，
+        # 就在对象构造时自动把模板坐标载入进来。
+        if self.cg_gro_file is not None and (
+            self.coords.size == 0 or len(self.bead_types) == 0
+        ):
             self.load_cg_coords()
 
         self._compute_physical_properties()
@@ -96,13 +110,14 @@ class Protein:
         tm_helices: int = 0,
     ) -> "Protein":
         """
-        从 MARTINI 粗粒度 .gro 构建模板。
+        从单分子 CG `.gro` 创建模板对象。
 
-        注意：GROMACS `.gro` 的坐标单位是 nm，此实现不做 nm->Å 换算。
+        这里不立刻要求用户手动传 bead 坐标，
+        而是把 `.gro` 路径放进 `cg_gro_file`，由 `__post_init__()` 自动完成载入。
         """
         return cls(
             name=name,
-            coords=np.zeros((0, 3), dtype=float),  # 由 load_cg_coords() 填充
+            coords=np.zeros((0, 3), dtype=np.float64),
             radius=radius,
             tm_center=tm_center,
             category=category,
@@ -115,19 +130,28 @@ class Protein:
         )
 
     def load_cg_coords(self) -> None:
-        """从 cg .gro 文件加载粗粒度珠子坐标与 bead_types（从 atomName 读取）。"""
+        """
+        用固定列宽解析 CG `.gro` 文件。
+
+        `.gro` 不是按空格分隔的自由文本格式，
+        所以这里必须按列切片，而不能偷懒直接 `split()`。
+        """
         if self.cg_gro_file is None:
             raise ValueError("cg_gro_file is None")
 
         gro_path = Path(self.cg_gro_file)
         if not gro_path.exists():
-            raise FileNotFoundError(f"粗粒度文件不存在: {gro_path}")
+            raise FileNotFoundError(f"Coarse-grained file does not exist: {gro_path}")
 
         lines = gro_path.read_text(encoding="utf-8").splitlines()
         if len(lines) < 3:
             raise ValueError(f"Invalid .gro file: {gro_path}")
 
-        natoms = int(lines[1].strip())
+        try:
+            natoms = int(lines[1].strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid atom count in .gro file: {gro_path}") from exc
+
         atom_lines = lines[2 : 2 + natoms]
         if len(atom_lines) != natoms:
             raise ValueError(
@@ -136,74 +160,67 @@ class Protein:
 
         coords: List[List[float]] = []
         bead_types: List[str] = []
+        for line_index, line in enumerate(atom_lines, start=1):
+            if len(line) < 44:
+                raise ValueError(
+                    f"Atom line {line_index} is too short for fixed-width parsing: {gro_path}"
+                )
+            bead_types.append(line[10:15].strip())
+            coords.append(
+                [
+                    float(line[20:28].strip()),
+                    float(line[28:36].strip()),
+                    float(line[36:44].strip()),
+                ]
+            )
 
-        for line in atom_lines:
-            # .gro 常见列：
-            # resSeq(1-5) resName(6-10) atomName(11-15) atomNum(16-20) x(21-28) y(29-36) z(37-44)
-            atom_name = line[10:15].strip()
-            x = float(line[20:28])
-            y = float(line[28:36])
-            z = float(line[36:44])
-            coords.append([x, y, z])
-            bead_types.append(atom_name)
-
-        self.coords = np.asarray(coords, dtype=float)
+        self.coords = np.asarray(coords, dtype=np.float64)
         self.bead_types = bead_types
 
     def _compute_physical_properties(self) -> None:
-        """计算排斥半径（挖洞）、跨膜中心 Z、以及包围盒。"""
+        """
+        计算 builder 最依赖的三个几何缓存：
+        - `bounding_box`
+        - `radius`
+        - `tm_center`
+
+        这里的 `radius` 不是范德华半径，而是“膜平面占位半径”。
+        """
         if self.coords.size == 0:
-            if self.radius is None:
-                self.radius = 0.0
-            if self.tm_center is None:
-                self.tm_center = 0.0
-            if self.bounding_box is None:
-                self.bounding_box = (np.zeros(3), np.zeros(3))
+            self.radius = 0.0 if self.radius is None else float(self.radius)
+            self.tm_center = 0.0 if self.tm_center is None else float(self.tm_center)
+            self.bounding_box = (np.zeros(3), np.zeros(3))
             return
 
-        # 包围盒（min/max）
         min_coords = np.min(self.coords, axis=0)
         max_coords = np.max(self.coords, axis=0)
         self.bounding_box = (min_coords, max_coords)
 
-        # radius：以 XY 几何中心为参考的最大投影距离，再乘 1.2 安全裕度
+        # 这里先取 xy 平面的几何中心，再看最远 bead 到该中心的距离，
+        # 最后乘一个 1.2 的安全系数，作为局部防撞用的占位半径。
         if self.radius is None:
-            xy = self.coords[:, :2]  # (N, 2)
-            center_xy = np.mean(xy, axis=0)  # (2,)
-            distances = np.linalg.norm(xy - center_xy, axis=1)  # (N,)
+            xy = self.coords[:, :2]
+            center_xy = np.mean(xy, axis=0)
+            distances = np.linalg.norm(xy - center_xy, axis=1)
             self.radius = float(np.max(distances) * 1.2)
 
-        # tm_center：Z 坐标几何平均（近似）
+        # 当前把跨膜中心简化成 z 坐标均值。
+        # 对这批四跨膜蛋白来说，这个近似足够支撑囊泡模板放置。
         if self.tm_center is None:
             self.tm_center = float(np.mean(self.coords[:, 2]))
 
-    def get_projected_radius(self) -> float:
-        """获取膜平面投影半径（挖洞用）。"""
-        return float(self.radius if self.radius is not None else 0.0)
-
-    def get_tm_center(self) -> float:
-        """获取跨膜区中心 Z 坐标。"""
-        return float(self.tm_center if self.tm_center is not None else 0.0)
-
-    def shifted_to_tm_center(self, target_z: float = 0.0) -> "Protein":
+    def _clone_with_coords(self, coords: np.ndarray, *, tm_center: Optional[float]) -> "Protein":
         """
-        返回一个新 Protein，使模板跨膜中心对齐到 `target_z`。
+        生成一个保留元数据的新模板副本。
 
-        仅做 Z 平移（NumPy 广播 + 向量化），不旋转、不变形。
+        这样所有“平移后得到的新模板”都走同一条复制路径，
+        避免在多个函数里重复组装 `Protein(...)`。
         """
-        current_center = self.get_tm_center()
-        dz = float(target_z) - current_center
-
-        shifted_coords = self.coords.copy()
-        if shifted_coords.size:
-            shifted_coords[:, 2] += dz
-
-        # 让新对象重新计算 bounding_box / radius / tm_center（由 __post_init__ 完成）
         return Protein(
             name=self.name,
-            coords=shifted_coords,
+            coords=np.asarray(coords, dtype=np.float64),
             radius=self.radius,
-            tm_center=float(target_z),
+            tm_center=self.tm_center if tm_center is None else float(tm_center),
             category=self.category,
             pdb_file=self.pdb_file,
             description=self.description,
@@ -215,3 +232,57 @@ class Protein:
             bead_types=list(self.bead_types),
             bounding_box=None,
         )
+
+    def copy_template(self) -> "Protein":
+        """
+        复制当前模板。
+
+        这个方法主要给上层 builder 用：
+        当一个体系里需要很多个相同蛋白时，没有必要重复从磁盘读取同一份 `.gro`。
+        直接复制已经解析好的模板更快，也更干净。
+        """
+        return self._clone_with_coords(self.coords.copy(), tm_center=self.tm_center)
+
+    def get_projected_radius(self) -> float:
+        """返回蛋白在膜平面上的占位半径。"""
+        return float(self.radius if self.radius is not None else 0.0)
+
+    def get_tm_center(self) -> float:
+        """返回当前模板的跨膜中心 z 坐标。"""
+        return float(self.tm_center if self.tm_center is not None else 0.0)
+
+    def shifted_to_tm_center(self, target_z: float = 0.0) -> "Protein":
+        """
+        只沿 z 方向平移模板，使跨膜中心对齐到 `target_z`。
+
+        这个函数故意不做旋转，也不碰 xy，
+        因为它的职责只是“把模板平到膜中面”。
+        """
+        shifted_coords = self.coords.copy()
+        if shifted_coords.size:
+            shifted_coords[:, 2] += float(target_z) - self.get_tm_center()
+        return self._clone_with_coords(shifted_coords, tm_center=target_z)
+
+    def prepared_for_placement(self) -> "Protein":
+        """
+        把蛋白模板整理到 builder 最喜欢的局部坐标系。
+
+        处理步骤：
+        1. 先把跨膜中心平到 `z = 0`；
+        2. 再把 xy 平面几何中心移到 `(0, 0)`。
+
+        这样整理后的模板就可以被几何模块当成“局部刚体”，
+        直接旋转到球面目标点，而不会额外携带旧模板的平移偏置。
+        """
+        centered = self.shifted_to_tm_center(0.0)
+        if centered.coords.size == 0:
+            return centered
+
+        coords = centered.coords.copy()
+        center_xy = np.mean(coords[:, :2], axis=0)
+        coords[:, 0] -= center_xy[0]
+        coords[:, 1] -= center_xy[1]
+        return centered._clone_with_coords(coords, tm_center=0.0)
+
+
+__all__ = ["PROTEIN_CATEGORIES", "Protein"]

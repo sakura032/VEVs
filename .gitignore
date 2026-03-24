@@ -71,15 +71,24 @@ outputs/**
 !outputs/archive/
 !outputs/archive/.gitkeep
 
+# vesicle generated outputs
+vesicle/outputs/**
+!vesicle/outputs/.gitkeep
+
 # generated local clean test input
 /data/test_systems/minimal_complex/minimal_complex_clean.pdb
 data/test_systems/test_3_15/**
 
+# frontend local install/build artifacts
+frontend/node_modules/
+frontend/dist/
+
 # frontend visualization bundles (symlink-only runtime data)
 frontend/visualization/**
 !frontend/visualization/.gitkeep
+!frontend/visualization/vesicle/
+!frontend/visualization/vesicle/.gitkeep
 frontend/public/visualization/**
 !frontend/public/visualization/.gitkeep
 
 
-vesicle/scripts/**

@@ -1,144 +1,97 @@
+"""
+vesicle.test.test_geometry
+==========================
+
+这组测试覆盖 geometry 模块最核心的三个几何算子：
+- 球面布点
+- 脂质球面对齐
+- 局部岛屿扰动
+"""
+
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
+import pytest
 
-# 让脚本可直接通过 `python vesicle/test/test_geometry.py` 运行。
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from vesicle.utils.geometry import align_lipid_to_sphere, generate_fibonacci_sphere
+from vesicle.utils.geometry import (
+    align_lipid_to_sphere,
+    apply_local_axis_angle_perturbation,
+    generate_fibonacci_sphere,
+)
 
 
 def _unit(vec: np.ndarray) -> np.ndarray:
-    """将输入向量单位化（测试辅助函数）。"""
-    norm = np.linalg.norm(vec)
-    if norm < 1e-12:
-        raise ValueError("测试中出现零向量，无法单位化")
-    return vec / norm
+    """测试辅助函数：把任意非零向量转成单位向量。"""
+    return vec / np.linalg.norm(vec)
 
 
-def _report_alignment(
-    aligned: np.ndarray,
-    target_point: np.ndarray,
-    center: np.ndarray,
-    label: str,
-    expect_tail_to_center: bool,
+def test_generate_fibonacci_sphere_points_lie_on_requested_radius() -> None:
+    """
+    只要球面布点正确，所有点到球心的距离都应该等于请求半径。
+    """
+    center = np.array([1.0, -2.0, 0.5], dtype=np.float64)
+    points = generate_fibonacci_sphere(radius=50.0, num_points=1000, center=center)
+
+    radii = np.linalg.norm(points - center, axis=1)
+    assert points.shape == (1000, 3)
+    assert np.allclose(radii, 50.0)
+
+
+@pytest.mark.parametrize(
+    ("flip_for_inner", "expected_dot_sign"),
+    [
+        (False, 1.0),
+        (True, -1.0),
+    ],
+)
+def test_align_lipid_to_sphere_orients_leaflets_correctly(
+    flip_for_inner: bool,
+    expected_dot_sign: float,
 ) -> None:
     """
-    输出并校验放置结果。
-
-    参数语义：
-    - expect_tail_to_center=True: 期望尾部指向球心（外叶）。
-    - expect_tail_to_center=False: 期望尾部背离球心（内叶）。
+    用一个最简单的“二珠模板”验证内外叶朝向：
+    - 外叶时尾部应朝球心；
+    - 内叶时尾部应背离球心。
     """
+    coords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, -1.0]], dtype=np.float64)
+    intrinsic_axis = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    target = np.array([10.0, 0.0, 0.0], dtype=np.float64)
+
+    aligned = align_lipid_to_sphere(
+        lipid_coords=coords,
+        lipid_up_vector=intrinsic_axis,
+        target_position=target,
+        flip_for_inner=flip_for_inner,
+    )
+
     head = aligned[0]
     tail = aligned[1]
+    tail_direction = _unit(tail - head)
+    center_direction = _unit(-head)
 
-    tail_dir = _unit(tail - head)
-    to_center = _unit(center - head)
-    away_center = -to_center
-
-    expected_dir = to_center if expect_tail_to_center else away_center
-    dot_val = float(np.dot(tail_dir, expected_dir))
-
-    print(f"\n[{label}]")
-    print(f"head = {head}")
-    print(f"tail = {tail}")
-    print(f"tail_dir = {tail_dir}")
-    print(f"expected_dir = {expected_dir}")
-    print(f"dot(tail_dir, expected_dir) = {dot_val:.6f}")
-
-    if np.allclose(head, target_point, atol=1e-8):
-        print("head_check = 通过（头部已到目标点）")
-    else:
-        print("head_check = 失败（头部未正确到达目标点）")
-
-    if dot_val > 0.999:
-        print("tail_direction_check = 通过（尾部方向符合预期）")
-    else:
-        print("tail_direction_check = 失败（尾部方向异常）")
+    assert np.allclose(head, target)
+    assert np.isclose(np.dot(tail_direction, center_direction), expected_dot_sign, atol=1e-6)
 
 
-def main() -> None:
+def test_apply_local_axis_angle_perturbation_preserves_radius_and_caps_angle() -> None:
     """
-    几何模块最小功能测试。
-
-    测试 1：Fibonacci 球面点云
-    - 生成半径 50 nm，1000 点。
-    - 打印 shape 与半径统计，验证点都在球面附近。
-
-    测试 2：脂质对齐与放置（外叶）
-    - 模板坐标: [[0,0,0], [0,0,-1]]，固有向量 [0,0,-1]。
-    - 放置在 target_point=[50,0,0]。
-    - 验证头部是否到目标点、尾部是否指向球心。
-
-    测试 3：脂质对齐与放置（内叶）
-    - 同样放置在 target_point=[50,0,0]。
-    - 验证头部是否到目标点、尾部是否背离球心。
+    局部扰动必须满足两个硬约束：
+    - 半径不变
+    - 扰动角不会超过上限
     """
-    print("=== Geometry Smoke Test ===")
+    np.random.seed(7)
+    anchor = np.array([0.0, 0.0, 10.0], dtype=np.float64)
+    perturbed = apply_local_axis_angle_perturbation(anchor, max_angle_rad=0.26)
 
-    # ---------- 测试 1 ----------
-    radius = 50.0
-    num_points = 1000
-    center = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    assert np.isclose(np.linalg.norm(perturbed), 10.0)
 
-    points = generate_fibonacci_sphere(radius=radius, num_points=num_points, center=center)
-
-    norms = np.linalg.norm(points - center, axis=1)
-    print("\n[Fibonacci Sphere]")
-    print(f"points.shape = {points.shape}")
-    print(f"radius_mean = {norms.mean():.6f}")
-    print(f"radius_min  = {norms.min():.6f}")
-    print(f"radius_max  = {norms.max():.6f}")
-
-    # ---------- 测试输入 ----------
-    coords = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0],
-        ],
-        dtype=np.float64,
+    angle = np.arccos(
+        np.clip(np.dot(_unit(anchor), _unit(perturbed)), -1.0, 1.0)
     )
-    v_intrinsic = np.array([0.0, 0.0, -1.0], dtype=np.float64)
-    target_point = np.array([50.0, 0.0, 0.0], dtype=np.float64)
-
-    # ---------- 测试 2：外叶 ----------
-    aligned_outer = align_lipid_to_sphere(
-        coords=coords,
-        v_intrinsic=v_intrinsic,
-        target_point=target_point,
-        center=center,
-        is_inner_leaflet=False,
-    )
-    _report_alignment(
-        aligned=aligned_outer,
-        target_point=target_point,
-        center=center,
-        label="Align Lipid To Sphere | Outer Leaflet",
-        expect_tail_to_center=True,
-    )
-
-    # ---------- 测试 3：内叶 ----------
-    aligned_inner = align_lipid_to_sphere(
-        coords=coords,
-        v_intrinsic=v_intrinsic,
-        target_point=target_point,
-        center=center,
-        is_inner_leaflet=True,
-    )
-    _report_alignment(
-        aligned=aligned_inner,
-        target_point=target_point,
-        center=center,
-        label="Align Lipid To Sphere | Inner Leaflet",
-        expect_tail_to_center=False,
-    )
+    assert angle <= 0.26 + 1e-12
 
 
-if __name__ == "__main__":
-    main()
+def test_apply_local_axis_angle_perturbation_rejects_negative_angle() -> None:
+    """负角上限没有物理意义，应该直接拒绝。"""
+    with pytest.raises(ValueError, match="max_angle_rad"):
+        apply_local_axis_angle_perturbation(np.array([1.0, 0.0, 0.0]), max_angle_rad=-0.1)

@@ -1,32 +1,40 @@
 ---
 name: basic
-description: 囊泡建模阶段的顶层技能规范。仅用于 VEVs 仓库中 vesicle 目录相关任务。触发后只读取 VEVs/vesicle 。涉及参数写入、外部资源引用或受规范影响的代码改动前，必须先联网核对官方权威来源并注明依据。代码需包含详细中文注释。改动完成后先询问用户是否需要飞书总结，仅在用户确认并指定阶段范围后再生成。
+description: 囊泡建模阶段的顶层技能规范。仅用于 VEVs 仓库中 `vesicle` 目录相关任务。触发后只读取 `VEVs/vesicle`。凡是涉及参数写入、外部资料引用或受规范影响的代码修改，在落地前必须先核对官方来源并说明依据。代码需要包含详细中文注释。改动完成后，应先询问用户是否需要飞书总结，只有在用户确认并指定范围后再生成。
 ---
 
-# Basic Skill
+# 基础技能说明
 
-## 1. Scope
-- Use this skill only for tasks under `VEVs/vesicle`.
+## 1. 适用范围
 
-## 2. Mandatory Source Verification
-- Before landing code, always verify official sources for:
-- scientific parameters,
-- external references,
-- format/spec-dependent logic (Martini/GROMACS conventions).
-- Prefer official Martini docs/repos (including `insane.py`) and official GROMACS docs.
-- In responses, explicitly map decisions to source URLs and distinguish direct conclusions vs engineering inferences.
+- 本技能只用于 `VEVs/vesicle` 目录下的任务。
 
-## 3. Code Commenting
-- Write detailed Chinese comments for:
-- core algorithm logic,
-- key fields/units/ranges,
-- naming semantics,
-- error-branch intent.
+## 2. 强制来源核验
 
-## 4. Feishu Summary Policy
-- After code changes, ask first: whether user needs a Feishu summary.
-- Generate summary only if user confirms and specifies summary scope (stages/time/file range).
+- 在落地代码前，以下内容必须优先核对官方来源：
+  - 科学参数；
+  - 外部参考结论；
+  - 与格式或规范强相关的实现逻辑，例如 Martini / GROMACS 约定。
+- 优先参考官方 Martini 文档、官方仓库与 `insane.py`，以及官方 GROMACS 文档。
+- 在回复中需要明确区分：
+  - 哪些结论是直接来自来源；
+  - 哪些是基于来源做出的工程推断。
 
-## 5. Invocation Policy
-- This skill is configured for explicit invocation only (`allow_implicit_invocation: false`).
-- Recommend user explicitly writes `$basic` when working on vesicle modeling tasks.
+## 3. 代码注释要求
+
+- 代码中需要补充详细中文注释，重点覆盖：
+  - 核心算法逻辑；
+  - 关键字段、单位与范围；
+  - 命名语义；
+  - 错误分支与防御性判断的意图。
+
+## 4. 飞书总结策略
+
+- 代码改动完成后，必须先询问用户是否需要飞书总结。
+- 只有用户明确确认，并给出总结范围（阶段、时间范围或文件范围）后，才生成飞书总结。
+
+## 5. 触发策略
+
+- 该技能配置为“仅显式触发”：
+  - `allow_implicit_invocation: false`
+- 在处理囊泡建模任务时，建议用户显式写出 `$basic`。

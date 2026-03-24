@@ -1,102 +1,99 @@
 """
-vesicle/utils/collision.py
+vesicle.utils.collision
+=======================
 
-碰撞检测与蛋白放置模块 - 阶段二核心
+这个模块现在刻意保持“纯工具层”定位：
 
-主要功能：
-1. 使用 scipy.spatial.cKDTree 快速检测脂质放置位置是否与已放置蛋白碰撞
-2. 实现蛋白在球面的初步放置（随机选点 + 旋转对齐 + 挖洞）
-3. 支持蛋白分类（surface_transmembrane / inner_associated）
-4. 与 geometry.py 无缝配合（使用 Person B 的 Fibonacci 撒点和旋转对齐）
+- 不决定蛋白该放哪里；
+- 不生成候选点；
+- 不处理岛屿分配；
+- 只负责把已经落位的蛋白 bead 坐标组织成 KD-tree，
+  然后回答“这个点是否离蛋白太近”。
 
-设计要点：
-- 先放置所有蛋白 → 构建 KD-Tree → 再放置脂质（效率最高）
-- 排斥半径默认为 0.5 nm（MARTINI 珠子安全距离，可调）
-- 支持内外叶不同挖洞逻辑
-- 所有坐标单位统一为 nm（与 MARTINI .gro 一致）
-
-优化建议（已标注）：
-- Person B 的 generate_fibonacci_sphere 已足够好，但如果点数非常大（>50000），可考虑用 halton sequence 替代（更均匀）
-- 旋转对齐已使用 scipy Rotation，奇点处理良好，无需手动改
+这样 builder 可以专注于组装策略，而 collision 只专注于几何排斥查询。
 """
 
 from __future__ import annotations
 
+from typing import List, Optional
+
 import numpy as np
 from scipy.spatial import cKDTree
-from pathlib import Path
-from typing import List, Tuple, Optional, Dict
 
-# 导入 Person B 已实现的几何函数（geometry.py）
-from .geometry import (
-    generate_fibonacci_sphere,
-    align_lipid_to_sphere,
-)
+# 这是 bead 级别的默认蛋白排斥查询半径。
+# builder 可以根据具体阶段覆盖这个值，例如脂质挖洞时会使用更大的排斥半径。
+COLLISION_RADIUS = 0.22
 
-# ────────────────────────────────────────────────
-# 全局常量
-# ────────────────────────────────────────────────
-COLLISION_RADIUS = 0.5          # MARTINI 珠子典型排斥半径（nm）
-EPS_COLLISION = 1e-6            # 距离判断浮点容差
+
+def _as_coords(name: str, coords: np.ndarray) -> np.ndarray:
+    """把输入强制检查为 shape=(N,3) 的有限坐标矩阵。"""
+    arr = np.asarray(coords, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"{name} must have shape (N, 3), got {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains NaN or Inf")
+    return arr
+
+
+def _as_vec3(name: str, value: np.ndarray) -> np.ndarray:
+    """把输入强制检查为 shape=(3,) 的有限向量。"""
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.shape != (3,):
+        raise ValueError(f"{name} must have shape (3,), got {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} contains NaN or Inf")
+    return arr
 
 
 class CollisionDetector:
     """
-    KD-Tree 碰撞检测器
+    蛋白 bead 碰撞检测器。
 
-    职责：
-    - 管理已放置蛋白的坐标树
-    - 快速查询新位置是否碰撞
-    - 支持分内外叶查询（surface_transmembrane 用外叶树，inner_associated 用内叶树）
+    当前只区分两棵树：
+    - outer_tree：表面/跨膜蛋白，主要用于囊泡膜面挖洞；
+    - inner_tree：内叶相关蛋白，为未来扩展保留。
+
+    对于当前外泌体建模主链路，CD9 / CD81 / CD63 都会走 `surface_transmembrane`。
     """
 
-    def __init__(self):
-        self.outer_tree: Optional[cKDTree] = None   # 外叶蛋白 KD-Tree
-        self.inner_tree: Optional[cKDTree] = None   # 内叶蛋白 KD-Tree
-        self.outer_protein_coords: List[np.ndarray] = []   # 已放置的外叶蛋白坐标
-        self.inner_protein_coords: List[np.ndarray] = []   # 已放置的内叶蛋白坐标
+    def __init__(self) -> None:
+        self.outer_tree: Optional[cKDTree] = None
+        self.inner_tree: Optional[cKDTree] = None
+        self.outer_protein_coords: List[np.ndarray] = []
+        self.inner_protein_coords: List[np.ndarray] = []
 
-    def add_protein(
-        self,
-        protein_coords: np.ndarray,
-        category: str,
-        position: np.ndarray,
-        rotation_matrix: Optional[np.ndarray] = None,
-    ):
+    def add_protein(self, protein_coords: np.ndarray, category: str) -> None:
         """
-        添加一个已放置的蛋白到碰撞检测树
+        向检测器注册一个已经放好的蛋白。
 
-        参数：
-            protein_coords : 该蛋白的所有珠子坐标 (N_beads, 3)
-            category       : 蛋白类别（surface_transmembrane / inner_associated）
-            position       : 放置位置（珠子原点）
-            rotation_matrix: 旋转矩阵（可选，已对齐）
+        注意这里接收的是“绝对坐标”而不是模板局部坐标。
+        也就是说，builder 在真正完成旋转和平移之后，才把结果交给 detector。
         """
-        # 应用旋转（如果有）
-        if rotation_matrix is not None:
-            rotated = rotation_matrix @ protein_coords.T
-            placed_coords = rotated.T + position
-        else:
-            placed_coords = protein_coords + position
-
+        coords = _as_coords("protein_coords", protein_coords)
         if category == "surface_transmembrane":
-            self.outer_protein_coords.append(placed_coords)
+            self.outer_protein_coords.append(coords)
         elif category == "inner_associated":
-            self.inner_protein_coords.append(placed_coords)
+            self.inner_protein_coords.append(coords)
         else:
-            raise ValueError(f"不支持的蛋白类别: {category}")
+            raise ValueError(f"Unsupported protein category: {category}")
 
-    def build_trees(self):
-        """构建 KD-Tree（必须在所有蛋白放置完成后调用）"""
-        if self.outer_protein_coords:
-            outer_all = np.vstack(self.outer_protein_coords)
-            self.outer_tree = cKDTree(outer_all)
+    def build_trees(self) -> None:
+        """
+        在全部蛋白放置完成后构建 KD-tree。
 
-        if self.inner_protein_coords:
-            inner_all = np.vstack(self.inner_protein_coords)
-            self.inner_tree = cKDTree(inner_all)
-
-        print(f"KD-Tree 构建完成: 外叶蛋白 {len(self.outer_protein_coords)} 个, 内叶蛋白 {len(self.inner_protein_coords)} 个")
+        之所以不在 `add_protein()` 时每次都重建，是因为那样复杂度会被放大很多，
+        而 builder 的正确调用顺序本来就是“先放完蛋白，再建树，再铺脂质”。
+        """
+        self.outer_tree = (
+            cKDTree(np.vstack(self.outer_protein_coords))
+            if self.outer_protein_coords
+            else None
+        )
+        self.inner_tree = (
+            cKDTree(np.vstack(self.inner_protein_coords))
+            if self.inner_protein_coords
+            else None
+        )
 
     def check_collision(
         self,
@@ -105,78 +102,36 @@ class CollisionDetector:
         radius: float = COLLISION_RADIUS,
     ) -> bool:
         """
-        检查给定位置是否与已放置蛋白碰撞
+        查询某个点是否落入指定类别蛋白的排斥半径内。
 
-        参数：
-            test_position : 要放置的新位置 (3,)
-            category      : 该位置所属类别（决定用哪个树）
-            radius        : 碰撞半径（默认 0.5 nm）
-
-        返回：
-            True = 碰撞（不能放），False = 无碰撞（可以放）
+        参数
+        ----
+        test_position
+            要检测的候选点，通常是脂质头部目标点。
+        category
+            选择查询哪一棵 KD-tree。
+        radius
+            查询半径。默认值适合 bead 级别碰撞；
+            builder 在脂质挖洞阶段通常会传更大的 `lipid_exclusion_radius`。
         """
-        test_pos = np.asarray(test_position).reshape(1, 3)
+        point = _as_vec3("test_position", test_position).reshape(1, 3)
+        radius = float(radius)
+        if not np.isfinite(radius) or radius < 0.0:
+            raise ValueError(f"radius must be finite and non-negative, got {radius}")
 
-        if category == "surface_transmembrane" and self.outer_tree is not None:
-            dist, _ = self.outer_tree.query(test_pos, k=1)
-            return dist[0] < radius
-
-        elif category == "inner_associated" and self.inner_tree is not None:
-            dist, _ = self.inner_tree.query(test_pos, k=1)
-            return dist[0] < radius
-
-        return False  # 没有树或类别不支持，默认不碰撞
-
-
-def place_proteins_on_sphere(
-    builder,
-    protein_list: List[Tuple[str, int, str]],   # (protein_name, count, category)
-    radius_nm: float,
-    detector: Optional[CollisionDetector] = None,
-) -> CollisionDetector:
-    """
-    在球面上放置蛋白质（带碰撞检测）
-
-    参数：
-        builder       : VesicleBuilder 实例（提供 generate_sphere_points 和 align_lipid_to_sphere）
-        protein_list  : 要放置的蛋白列表 [(name, count, category), ...]
-        radius_nm     : 囊泡半径
-        detector      : 已有的 CollisionDetector（可选，第一次调用可传 None）
-
-    返回：
-        CollisionDetector 对象（已构建好 KD-Tree）
-    """
-    if detector is None:
-        detector = CollisionDetector()
-
-    for protein_name, count, category in protein_list:
-        # 生成候选点（外叶或内叶）
         if category == "surface_transmembrane":
-            points = builder.generate_sphere_points(radius_nm, count * 5)  # 多生成一些候选
+            tree = self.outer_tree
+        elif category == "inner_associated":
+            tree = self.inner_tree
         else:
-            inner_r = radius_nm - builder.thickness_nm
-            points = builder.generate_sphere_points(inner_r, count * 5)
+            raise ValueError(f"Unsupported protein category: {category}")
 
-        placed_count = 0
-        for pos in points:
-            if placed_count >= count:
-                break
+        if tree is None:
+            # 还没建树，或者这类蛋白根本不存在。
+            return False
 
-            # 检查碰撞
-            if detector.check_collision(pos, category):
-                continue
+        distance, _ = tree.query(point, k=1)
+        return bool(distance[0] < radius)
 
-            # 对齐蛋白（调用 Person B 的旋转函数）
-            # 注意：这里假设蛋白模板已加载为 Protein 对象，后续可扩展
-            # 暂时用简单平移 + 随机旋转模拟（实际应调用 Protein 的对齐方法）
-            detector.add_protein(
-                protein_coords=np.zeros((10, 3)),  # 占位，实际应从 Protein.bead_coords 获取
-                category=category,
-                position=pos,
-            )
-            placed_count += 1
 
-        print(f"成功放置 {placed_count} 个 {protein_name} ({category})")
-
-    detector.build_trees()
-    return detector
+__all__ = ["COLLISION_RADIUS", "CollisionDetector"]

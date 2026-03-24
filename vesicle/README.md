@@ -1,175 +1,259 @@
-﻿# 虚拟细胞囊泡对接 MD 模拟工程蓝图（`vesicle/`）
+# 囊泡模块说明
 
-> 更新时间：2026-03-20
-> 核心架构：MARTINI CG + 纯 Python 几何组装 + GROMACS 物理弛豫
-> 核心战略：方案 B（独立建膜 -> 独立预平衡 -> 脱水对接 -> 整体拉伸动力学）
+> 更新时间：2026-03-24  
+> 核心技术栈：MARTINI 粗粒度模型 + Python 几何组装 + GROMACS 后续弛豫
 
----
+## 1. 模块目标
 
-## 1. 项目目标与执行原则
+`vesicle/` 目前仅实现“干态囊泡几何组装”这一阶段，未添加后续的水化、离子化、能量最小化、平衡和 PMF。
 
-### 1.1 总目标
-构建一条可复现的全流程：
-1. 纯 Python 生成大尺度 CG 囊泡/膜片干态初始结构。
-2. 用 GROMACS 完成物理弛豫与稳定化。
-3. 进入对接、SMD 与 US，输出可分析的 PMF 曲线。
+当前主目标是稳定输出一个可复现的外泌体粗粒度初始结构，流程包括：
 
-### 1.2 执行原则
-- 先蛋白，后脂质：先占坑再填膜，减少后期重排成本。
-- 几何与物理分层：Python 做几何初构，GROMACS 做真实动力学。
-- 参数必须可追溯：关键参数落地前必须二次核验官方来源。
-- 统一数据接口：下游模块只消费标准化实体，不接触原始脏数据。
+1. 读取并标准化脂质模板与蛋白模板。
+2. 以 TEM 岛屿化方式放置 `CD9 / CD81 / CD63`。
+3. 在蛋白排斥半径存在的前提下铺设外叶与内叶脂质。
+4. 输出 `vesicle.gro` 与 `topol.top`，供后续 GROMACS 使用。
 
----
+默认输出目录是 `vesicle/outputs/basic_vesicle/`，也支持写到任意命名 `vesicle/outputs/<dataset_name>/` 数据集目录。
 
-## 2. 最新状态快照（截至 2026-03-20）
+## 2. 当前目录结构与职责
 
-### 2.1 已完成
-1. Phase 1 脂质基础能力完成：
-- `vesicle/models/lipid.py` 已整合蓝图、实体、脂质库、解析器、构建器；
-- 通过锚点法统一方向定义，支持 CHOL 特例（硬编码构象）；
-- 脂质工厂测试通过：`vesicle/test/test_factory.py`。
+### `vesicle/models/lipid.py`
 
-2. Phase 2（任务调换后）已完成前两算法：
-- `vesicle/utils/geometry.py`
-  - `generate_fibonacci_sphere(...)`
-  - `align_lipid_to_sphere(...)`
-- 几何测试通过：`vesicle/test/test_geometry.py`。
+职责：
 
-### 2.2 结构调整（已生效）
-- 删除：`vesicle/utils/lipid_factory.py`
-- 删除：`vesicle/utils/lipid_gro_parser.py`
-- 现状：脂质能力以 `vesicle/models/lipid.py` 为唯一主入口。
+- 定义脂质蓝图 `LipidBlueprint`
+- 定义运行时三维脂质对象 `Lipid3D`
+- 维护项目当前使用的 `LIPID_LIBRARY`
+- 提供 `build_lipid_3d(...)`，把原始模板转成 builder 可直接放置的局部刚体
 
----
+当前实现要点：
 
-## 3. 分工更新（A/B 已调换，避免冲突）
+- 脂质头部中心会被平移到局部原点
+- 本征方向统一定义为“头部中心 -> 尾部中心”
+- `CHOL` 使用硬编码模板
+- 其他脂质通过固定列宽 `.gro` 解析得到
 
-## 3.1 Phase 2 当前分工
-- Person B（你）：
-  - 负责几何内核前两算法（Fibonacci 球面布点 + 脂质对齐旋转平移）
-  - 当前状态：已完成并测试通过
+### `vesicle/models/protein.py`
 
-- Person A：
-  - 接手 KD-Tree 空间约束、蛋白先放置逻辑、碰撞接口
-  - 当前状态：待实现
+职责：
 
-## 3.2 后续阶段默认分工（建议保持）
-- Person A：蛋白链路、KD-Tree/Builder 主循环、GROMACS 参数与流程联调
-- Person B：脂质数据治理、几何算子、输出器与数据标准化、接口稳定性测试
+- 定义蛋白模板对象 `Protein`
+- 从单分子 CG `.gro` 文件读取 bead 坐标
+- 计算放置时常用的几何量：
+  - 膜平面投影半径
+  - 跨膜中心
+  - 包围盒
+- 提供 `prepared_for_placement()`，把模板整理到适合球面放置的局部坐标系
 
----
+当前实现要点：
 
-## 4. 核心算法总表（按模块）
+- `Protein.from_gro(...)` 是蛋白模板标准入口
+- `prepared_for_placement()` 会先把 `tm_center` 平到 `z=0`，再把 `xy` 几何中心平到原点
+- `copy_template()` 用于复用已加载模板，避免重复读取同一份 `.gro`
 
-## 4.1 脂质标准化（已完成）
-文件：`vesicle/models/lipid.py`
-- 锚点法方向定义：
-  - `head_center = mean(head_anchors)`
-  - `tail_center = mean(tail_anchors)`
-  - `vector = normalize(tail_center - head_center)`
-- 坐标归一：`coords -= head_center`
-- CHOL 特例：硬编码 `ROH -> C2` 主轴
+### `vesicle/utils/geometry.py`
 
-## 4.2 球面布点（已完成）
-文件：`vesicle/utils/geometry.py`
-- Fibonacci + 黄金角
-- 面积补偿：`z = 1 - 2*(i+0.5)/N`
-- 支持任意球心平移
+职责：
 
-## 4.3 脂质对齐（已完成）
-文件：`vesicle/utils/geometry.py`
-- 目标法线：`n = normalize(target - center)`
-- 外叶：`v_target = -n`；内叶：`v_target = n`
-- 角度：`angle = arccos(clip(dot(v_intrinsic, v_target), -1, 1))`
-- 奇点处理：
-  - `angle < eps` 直接平移
-  - `angle -> pi` 动态构造正交旋转轴
+- 提供球面布点
+- 提供局部模板到球面的刚体对齐
+- 提供 TEM 岛屿内部的局部角扰动
 
-## 4.4 KD-Tree 碰撞过滤（阶段二待完成）
-建议文件：`vesicle/utils/collision.py`
-- 构建：`scipy.spatial.cKDTree`
-- 查询：`min_dist < threshold` 判碰
-- 阈值默认：`0.5 nm`（0.5为ai给出不要太信任，最好先按官方参数核验）
+当前公开接口：
 
-## 4.5 总装循环（阶段三待完成）
-建议文件：`vesicle/models/vesicle_builder.py`
-- 先放蛋白并构建障碍树
-- 内外叶按比例布脂，碰撞即跳过
-- 输出组装统计与异常报告
+- `generate_fibonacci_sphere(...)`
+- `align_template_to_sphere(...)`
+- `align_lipid_to_sphere(...)`
+- `apply_local_axis_angle_perturbation(...)`
 
-## 4.6 `.gro` 写出（阶段三待完成）
-建议文件：`vesicle/utils/gro_writer.py`
-- 严格列宽格式
-- 原子序号溢出循环编号（`% 100000`）
-- 大体系一次性缓冲写出（`list + ''.join`）
+说明：
 
----
+- `apply_local_axis_angle_perturbation(...)` 采用“随机轴 + 均匀角度”的局部角扰动
+- 该算法故意保留中心更密、边缘更疏的局部分布，用于模拟 TEM 微结构域聚簇
 
-## 5. 六阶段细化计划（统筹版）
+### `vesicle/utils/collision.py`
 
-## 阶段一：核心数据类与砖块准备（已完成）
-目标：脂质数据、模板解析、方向标准化。
-完成标志：`lipid.py + test_factory.py` 可稳定构建 POPC/CHOL。
+职责：
 
-## 阶段二：核心 3D 几何引擎（进行中）
-目标：形成可复用无状态数学内核。
-- 已完成：
-  1. Fibonacci 球面点云
-  2. 脂质对齐旋转平移（含奇点防护）
-- 待完成：
-  3. KD-Tree 碰撞过滤
-  4. 蛋白占位与障碍初始化
+- 维护蛋白 bead 的绝对坐标
+- 构建 KD-tree
+- 判断候选点是否落入蛋白排斥壳内
 
-## 阶段三：囊泡与膜片总装（待启动）
-目标：输出可读 `.gro` 干态大体系。
-核心：先蛋白后脂质、内外叶不对称配比、碰撞拒绝。
+当前实现要点：
 
-## 阶段四：独立组件物理弛豫（待启动）
-目标：EM + NVT/NPT 消除几何拼装伪影。
-核心：自动化脚本、去水与拓扑一致性。
+- 该模块已收敛为纯工具层
+- 不再负责蛋白放置策略
+- builder 当前把 `CD9 / CD81 / CD63` 都按 `surface_transmembrane` 处理
 
-## 阶段五：精准脱水对接（待启动）
-目标：囊泡与膜片在安全临界距离组装为复合体。
-核心：bbox 间距控制、干态合并与 top 同步。
+### `vesicle/models/vesicle_builder.py`
 
-## 阶段六：整体再平衡与 SMD/US（待启动）
-目标：获得可解释 PMF 曲线。
-核心：Pull groups 定义、SMD 抽窗、WHAM 重建。
+职责：
 
----
+- 定义输出账本记录 `AtomRecord`
+- 定义核心总装器 `VesicleBuilder`
+- 串联蛋白放置、双叶铺脂和 `.gro/.top` 写出
 
-## 6. 里程碑与验收门槛
+当前主流程：
 
-- M1（已达成）：脂质工厂稳定输出 `Lipid3D`。
-- M2（进行中）：几何内核可完成无奇点对齐与球面布点。
-- M3（下一目标）：KD-Tree 接入后可无碰撞种膜并输出 `.gro`。
-- M4：组件弛豫收敛且无明显结构崩坏。
-- M5：对接复合体稳定并可进入 SMD。
-- M6：US 全窗口完成并输出 PMF。
+1. `place_proteins_clustered(...)`
+2. `detector.build_trees()`
+3. `_fill_lipid_leaflet(self.R_out, self.comp_out, False)`
+4. `_fill_lipid_leaflet(self.R_in, self.comp_in, True)`
+5. `write_outputs(...)`
 
----
+额外入口：
 
-## 7. 未来 72 小时建议执行序列（按依赖顺序）
+- `VesicleBuilder.make_protein_clusters(...)`
+  - 直接生成默认三岛、45 蛋白输入
 
-1. Person A 完成 `collision.py`（KD-Tree 构建 + 判碰接口）
-2. Person A 完成蛋白占位原型（先放置 + 障碍树初始化）
-3. Person B 输出几何接口文档（函数输入输出、单位、异常）
-4. A/B 合并联调 `vesicle_builder.py` 雏形
-5. 增加阶段二回归测试（几何 + 判碰组合测试）
+## 3. 当前默认生物学设定
 
----
+### 蛋白三岛
 
-## 8. 文档维护约定
+默认三岛45蛋白异质性布局为：
 
-- 每次阶段性交付后，必须同步更新：
-  - “最新状态快照”
-  - “分工更新”
-  - “里程碑状态”
-- 当参数发生变更时，必须在提交说明中写明：
-  - 变更原因
-  - 来源依据
-  - 验证结果
+- 岛 0：`8 x CD9 + 7 x CD81`
+- 岛 1：`7 x CD9 + 8 x CD81`
+- 岛 2：`15 x CD63`
 
-（完）
+对应当前项目的假设：
 
+- `CD9 / CD81` 偏向质膜来源，倾向混居
+- `CD63` 偏向晚期内体来源，更接近独居岛
+
+### 脂质双叶配方
+
+外叶：
+
+- `CHOL`：45%
+- `POPC`：35%
+- `DPSM`：20%
+
+内叶：
+
+- `CHOL`：45%
+- `POPE`：35%
+- `POPS`：15%
+- `POP2`：5%
+
+builder 采用“先转精确整数个数，再打乱脂质序列”的做法，而不是逐点概率抽样。
+计数分配使用最大余数法，以保证中等规模体系下配方更稳定、可复现。
+
+## 4. 输出文件与前端同步
+
+### 一条命令生成基础囊泡
+
+推荐直接运行：
+
+```bash
+python -m vesicle.scripts.build_default_basic_vesicle
+```
+
+默认行为：
+
+- 使用 `VesicleBuilder.make_protein_clusters(...)` 构造默认 45 蛋白三岛输入
+- 默认固定随机种子为 `11`
+- 脚本层把岛内角半径放宽到 `0.60 rad`
+- 脚本层把蛋白落位最大尝试次数提高到 `200`
+- 组装基础囊泡
+- 写出到 `vesicle/outputs/basic_vesicle/`
+- 自动同步到 `frontend/visualization/vesicle/basic_vesicle/`
+- 更新前端数据集索引 `frontend/visualization/vesicle/index.json`
+
+Whole Vesicle Explorer 会从 `frontend/visualization/vesicle/index.json` 读取可用数据集，并默认选择最近一次同步成功的数据集。
+
+### 写到新的数据集目录
+
+如果你要把默认构建逻辑写到新的数据集目录，可指定output-dir,例如 `vesicle3_24`，运行：
+
+```bash
+python -m vesicle.scripts.build_default_basic_vesicle --output-dir vesicle/outputs/vesicle3_24
+```
+
+这条命令会：
+
+- 生成 `vesicle/outputs/vesicle3_24/vesicle.gro`
+- 生成 `vesicle/outputs/vesicle3_24/topol.top`
+- 自动同步到 `frontend/visualization/vesicle/vesicle3_24/`
+- 更新 `frontend/visualization/vesicle/index.json`
+
+如果你只想写本地输出、不进入前端可视化列表，运行：
+
+```bash
+python -m vesicle.scripts.build_default_basic_vesicle --output-dir vesicle/outputs/<dataset_name> --no-sync-frontend
+```
+
+自动同步只支持 `vesicle/outputs/<dataset_name>/` 这一层级。  
+如果开启同步但输出目录不在这个根下，脚本会先给出警告，再报错退出。
+
+### 手动同步
+
+通用同步脚本是：
+
+```bash
+python -m vesicle.scripts.sync_vesicle_to_frontend --source-dir vesicle/outputs/<dataset_name>
+```
+
+它会把 `vesicle/outputs/<dataset_name>/` 镜像到
+`frontend/visualization/vesicle/<dataset_name>/`，并维护 `index.json`。
+
+### `vesicle.gro`
+
+当前约定：
+
+- 使用 GROMACS 固定列宽格式输出
+- `res_id` 与 `atom_id` 回绕到 `1..99999`
+- 输出前把体系整体平移到正坐标区域
+- 最外层默认保留 5 nm padding
+- 默认输出位置为 `vesicle/outputs/basic_vesicle/vesicle.gro`
+- 也可通过 `--output-dir` 改成 `vesicle/outputs/<dataset_name>/vesicle.gro`
+
+### `topol.top`
+
+当前约定：
+
+- 所有力场与分子 `itp` 统一从 `vesicle/data/forcefields/` 目录相对引入
+- 始终 include `vesicle/data/forcefields/martini_v2.2.itp`
+- 自动 include 本次体系中实际出现的官方脂质 `itp`
+- 自动 include 本次体系中实际出现的蛋白 `itp`
+- `[ molecules ]` 中蛋白名使用 martinize 输出的 moleculetype 名：
+  - `CD9_0`
+  - `CD63_0`
+  - `CD81_0`
+- 脂质直接使用 MARTINI 力场中已有的分子名
+- 默认输出位置为 `vesicle/outputs/basic_vesicle/topol.top`
+- 也可通过 `--output-dir` 改成 `vesicle/outputs/<dataset_name>/topol.top`
+
+## 5. 测试体系
+
+`vesicle/test/` 目前全部采用 pytest 回归测试，覆盖：
+
+- 脂质模板标准化
+- 球面布点与对齐
+- 局部角扰动
+- 蛋白模板读取与放置前整理
+- 默认三岛构造器
+- builder 总装
+- `.gro` / `.top` 输出
+- 多数据集输出与前端同步索引
+
+从仓库根目录运行：
+
+```bash
+python -m pytest -q -p no:cacheprovider vesicle/test
+```
+
+## 6. 当前边界
+
+`vesicle/` 当前只负责“结构初始组装”和“拓扑写出”。
+
+暂不负责：
+
+- 水化
+- 离子化
+- 能量最小化
+- NVT / NPT 平衡
+- 对接、SMD、US、PMF 等后续流程
+
+这些内容属于下游模拟阶段，不在本目录当前实现范围内。
