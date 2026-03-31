@@ -60,10 +60,10 @@ class AtomRecord:
     计算和序列化是分开的。
     """
 
-    res_id: int
-    res_name: str
-    atom_name: str
-    atom_id: int
+    res_id: int #这一行 bead 属于哪个分子，写进 .gro residue number 那一列的编号
+    res_name: str #写进 .gro residue name 那一列的名字
+    atom_name: str #写进 .gro atom name 那一列的名字
+    atom_id: int #这一行 bead 在整个文件里是第几个粒子
     x: float
     y: float
     z: float
@@ -98,7 +98,7 @@ class VesicleBuilder:
     # 实际阈值 = 1.25 * (r_i + r_j)。
     PROTEIN_SPACING_FACTOR = 1.25
 
-    # 铺脂时会多生成30%的球面候选点，用来抵消蛋白挖洞后导致的点位损失。
+    # 铺脂时会多生成30%的球面候选点，用来抵消蛋白挖洞跳过太多可用点位的损失。固定配方总数，增加候选点冗余
     LIPID_POINT_OVERSAMPLE = 1.30
 
     # `.top` 里蛋白分子名与 builder 输入名并不完全一致。

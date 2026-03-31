@@ -54,22 +54,22 @@ class Protein:
     当前只做“对 builder 真正有用”的几何预处理。
     """
 
-    name: str
-    coords: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float64))
-    radius: Optional[float] = None
-    tm_center: Optional[float] = None
+    name: str  # 蛋白名称，最基本的身份标识
+    coords: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float64))  # bead 级局部坐标
+    radius: Optional[float] = None  # 膜平面投影占位半径，用于防撞
+    tm_center: Optional[float] = None  # 跨膜中心的近似 z 坐标
 
-    category: str = "surface_transmembrane"
-    pdb_file: Optional[Path] = None
-    description: Optional[str] = None
-    net_charge: float = 0.0
-    is_glycosylated: bool = False
-    tm_helices: int = 0
+    category: str = "surface_transmembrane"  # 蛋白类别，如表面跨膜蛋白
+    pdb_file: Optional[Path] = None  # 原始或参考 PDB 路径
+    description: Optional[str] = None  # 文字说明，不参与几何计算
+    net_charge: float = 0.0  # 近似净电荷
+    is_glycosylated: bool = False  # 是否糖基化
+    tm_helices: int = 0  # 跨膜螺旋数量
 
-    cg_gro_file: Optional[Path] = None
-    cg_top_file: Optional[Path] = None
-    bead_types: List[str] = field(default_factory=list)
-    bounding_box: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    cg_gro_file: Optional[Path] = None  # 粗粒化 .gro 模板路径
+    cg_top_file: Optional[Path] = None  # 粗粒化 topology 路径
+    bead_types: List[str] = field(default_factory=list)  # bead 名称/类型列表
+    bounding_box: Optional[Tuple[np.ndarray, np.ndarray]] = None  # 局部包围盒
 
     def __post_init__(self) -> None:
         """统一做输入合法性检查，并在需要时自动加载 `.gro`。"""
