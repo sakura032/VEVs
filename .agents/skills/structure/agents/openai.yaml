@@ -1,0 +1,7 @@
+interface:
+  display_name: "structure"
+  short_description: "目录迁移与模块重构的结构化工作流"
+  default_prompt: "请使用 $structure 处理这次目录迁移、文件重命名或结构整理任务。"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,19 +1,49 @@
-# Sync .project/sourceTexts/ folder (source text files)
-
-# Don't sync user-specific SQLite databases
+# Project-local metadata
 .project/*.sqlite
-
-# Don't sync SQLite auxiliary files
 .project/*.sqlite-wal
 .project/*.sqlite-shm
-
-# Don't sync user-specific files
+.project/attachments/files/**
 .project/complete_drafts.txt
 .project/localProjectSettings.json
 .project/localProjectSwap.json
 copilot-messages.log
+.codex
 
-# Archive formats
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+.venv/
+venv/
+env/
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+
+# Frontend install and build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local runtime data and transient artifacts
+logs/**
+data/interim/**
+frontend/public/visualization/**
+tests/.tmp/
+
+# Archives and packaged binaries
 *.zip
 *.rar
 *.7z
@@ -24,8 +54,12 @@ copilot-messages.log
 *.gz
 *.bz2
 *.xz
-
-# Windows executables and installers
+*.iso
+*.img
+*.vhd
+*.vmdk
+*.dmg
+*.pkg
 *.exe
 *.msi
 *.bat
@@ -33,62 +67,3 @@ copilot-messages.log
 *.com
 *.scr
 *.dll
-
-# macOS executables and disk images
-*.dmg
-*.pkg
-
-# Disk images and virtual machine files
-*.iso
-*.img
-*.vhd
-*.vmdk
-
-# System files
-.DS_Store
-.project/attachments/files/**
-
-# Python cache artifacts
-**/__pycache__/
-*.pyc
-*.pyo
-
-# IDE local settings
-.vscode/
-
-# keep empty directory structure for work/ and outputs/
-work/**
-!work/.gitkeep
-!work/runs/
-!work/runs/.gitkeep
-!work/archive/
-!work/archive/.gitkeep
-
-outputs/**
-!outputs/.gitkeep
-!outputs/runs/
-!outputs/runs/.gitkeep
-!outputs/archive/
-!outputs/archive/.gitkeep
-
-# vesicle generated outputs
-vesicle/outputs/**
-!vesicle/outputs/.gitkeep
-
-# generated local clean test input
-/data/test_systems/minimal_complex/minimal_complex_clean.pdb
-data/test_systems/test_3_15/**
-
-# frontend local install/build artifacts
-frontend/node_modules/
-frontend/dist/
-
-# frontend visualization bundles (symlink-only runtime data)
-frontend/visualization/**
-!frontend/visualization/.gitkeep
-!frontend/visualization/vesicle/
-!frontend/visualization/vesicle/.gitkeep
-frontend/public/visualization/**
-!frontend/public/visualization/.gitkeep
-
-

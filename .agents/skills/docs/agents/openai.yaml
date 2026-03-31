@@ -1,0 +1,7 @@
+interface:
+  display_name: "docs"
+  short_description: "README 与 docs 体系同步维护"
+  default_prompt: "请使用 $docs 同步更新当前仓库的 README、docs 或技能使用说明。"
+
+policy:
+  allow_implicit_invocation: true

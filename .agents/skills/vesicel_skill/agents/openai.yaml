@@ -1,7 +1,0 @@
-interface:
-  display_name: "VEVs"
-  short_description: "VEVs 仓库总体规范（显式调用）"
-  default_prompt: "请严格按 VEVs skill 规范执行，先判断层次再改代码，并保持 README/TREE 与当前代码一致。"
-
-policy:
-  allow_implicit_invocation: false

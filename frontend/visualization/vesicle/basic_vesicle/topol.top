@@ -1,0 +1,24 @@
+#include "../../data/forcefields/martini_v2.2.itp"
+#include "../../data/forcefields/martini_v2.0_CHOL_02.itp"
+#include "../../data/forcefields/martini_v2.0_POPC_02.itp"
+#include "../../data/forcefields/martini_v2.0_DPSM_01.itp"
+#include "../../data/forcefields/martini_v2.0_POPE_02.itp"
+#include "../../data/forcefields/martini_v2.0_POPS_02.itp"
+#include "../../data/forcefields/martini_v2.0_POP2_01.itp"
+#include "../../data/forcefields/CD9_0.itp"
+#include "../../data/forcefields/CD63_0.itp"
+#include "../../data/forcefields/CD81_0.itp"
+
+[ system ]
+VesicleBuilder system
+
+[ molecules ]
+CD9_0      15
+CD63_0     15
+CD81_0     15
+CHOL       40159
+POPC       16916
+DPSM       9666
+POPE       14318
+POPS       6136
+POP2       2045

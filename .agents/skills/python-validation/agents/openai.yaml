@@ -1,0 +1,7 @@
+interface:
+  display_name: "python-validation"
+  short_description: "Python 主干改动后的最小可信验证"
+  default_prompt: "请使用 $python-validation 为这次 Python 改动执行合适的最小验证集合。"
+
+policy:
+  allow_implicit_invocation: true

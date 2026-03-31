@@ -1,7 +1,7 @@
 interface:
-  display_name: "Frontend"
-  short_description: "VEVs 前端与囊泡可视化开发"
-  default_prompt: "请使用 frontend skill：处理 VEVs/frontend 或 vesicle 可视化联动时，必须优先进入 WSL2 交互式 shell，激活 vesicle_sim，再检查 node、npm、node_modules 和 vite；不要仅根据 Windows shell 或非交互式 WSL 的结果判断环境缺失。"
+  display_name: "frontend"
+  short_description: "前端应用架构与 vesicle 可视化开发"
+  default_prompt: "请使用 $frontend 处理当前前端应用、可视化路径或页面结构相关的改动。"
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

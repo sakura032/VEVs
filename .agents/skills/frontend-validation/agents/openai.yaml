@@ -1,0 +1,7 @@
+interface:
+  display_name: "frontend-validation"
+  short_description: "前端改动后的最小可信验证集合"
+  default_prompt: "请使用 $frontend-validation 为这次前端改动执行合适的验证步骤。"
+
+policy:
+  allow_implicit_invocation: true

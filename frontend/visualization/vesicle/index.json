@@ -1,0 +1,18 @@
+{
+  "datasets": [
+    {
+      "dataset_id": "evs3_24",
+      "label": "evs3_24",
+      "structure_url": "/visualization/vesicle/evs3_24/vesicle.gro",
+      "topology_url": "/visualization/vesicle/evs3_24/topol.top",
+      "updated_at": "2026-03-24T09:07:45.352955+00:00"
+    },
+    {
+      "dataset_id": "basic_vesicle",
+      "label": "basic_vesicle",
+      "structure_url": "/visualization/vesicle/basic_vesicle/vesicle.gro",
+      "topology_url": "/visualization/vesicle/basic_vesicle/topol.top",
+      "updated_at": "2026-03-24T08:40:33.933605+00:00"
+    }
+  ]
+}

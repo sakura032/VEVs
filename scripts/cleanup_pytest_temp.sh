@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cleanup pytest temporary/cache directories in project root.
+# Cleanup pytest temporary/cache directories used by this repository.
 # Usage:
 #   bash scripts/cleanup_pytest_temp.sh            # remove
-#   以上命令会删除项目根目录下的 pytest 临时文件夹，如 .pytest_tmp、pytest-cache-files-* 等。
-#   该命令只能在powershell终端运行，在wsl运行会报错没有权限删除
+#   以上命令会删除项目中 pytest 留下的临时目录。
 
 dry_run=0
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -19,12 +18,11 @@ cd "${project_root}"
 declare -a exact_targets=(
   ".pytest_tmp"
   "pytest_tmp_nodot"
+  "tests/.tmp"
 )
 
 declare -a wildcard_targets=(
   "pytest-cache-files-*"
-  "work/pytest_local_tmp*"
-  "work/pytest_temp"
 )
 
 declare -a to_delete=()
@@ -65,4 +63,3 @@ if [[ ${dry_run} -eq 1 ]]; then
 else
   echo "Cleanup finished."
 fi
-

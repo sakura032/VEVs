@@ -1,39 +1,15 @@
-# VEVs Frontend (Route A Structure Explorer v1)
+# VEVs Frontend
 
-This frontend is a single-page scientific workspace for Route A receptor-ligand complex visualization.
+前端说明已经迁移到 `docs/` 体系，当前这个文件只保留导航作用。
 
-## Key boundaries
+建议从这两份文档开始：
 
-- Scope is `receptor-ligand complex`, not whole vesicle.
-- Docking backend is currently `placeholder`.
-- UI explicitly exposes `backend / scientific_validity / analysis_mode`.
-- Frontend consumes files from run artifacts and does not change scientific outputs.
+- [Frontend Architecture](../docs/design/frontend_architecture.md)
+- [Frontend Usage Guide](../docs/user_guide/frontend_usage.md)
+- [Skills Usage Guide](../docs/user_guide/skills_usage.md)
 
-## Bundle export
+前端目录本身仍然是应用根：
 
-Before running frontend, export one or more run bundles:
-
-```bash
-python scripts/export_visualization_bundle.py --run-id binding_route_a_3_13
-python scripts/export_visualization_bundle.py --run-id routeA_demo_20260310
-```
-
-This creates:
-
-- `frontend/visualization/<run_id>/work` (link to `work/runs/<run_id>`)
-- `frontend/visualization/<run_id>/outputs` (link to `outputs/runs/<run_id>`)
-- `frontend/visualization/<run_id>/sampled_frames.json` (symlink when source exists)
-- `frontend/visualization/<run_id>/frame_pdb/*` (symlinked frame PDB files when listed)
-- `frontend/visualization/<run_id>/derived/structure_roles.json` (lightweight role mapping metadata)
-- `frontend/visualization/index.json`
-- `frontend/public/visualization/` is cleaned and kept free of run artifacts
-
-## Start
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open the dev URL and load a run id from the left panel.
+- `src/`: React 应用源码
+- `visualization/vesicle/`: 前端读取的数据集目录
+- `package.json`: 开发、lint 和 build 入口

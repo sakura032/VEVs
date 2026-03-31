@@ -1,5 +1,5 @@
-import StructureExplorerPage from "../pages/StructureExplorerPage";
 import WholeVesicleExplorerPage from "../pages/WholeVesicleExplorerPage";
+import WorkspacePage from "../pages/WorkspacePage";
 
 export const appRoutes = [
   {
@@ -8,8 +8,8 @@ export const appRoutes = [
     element: WholeVesicleExplorerPage,
   },
   {
-    id: "structure-explorer",
-    label: "Structure Explorer",
-    element: StructureExplorerPage,
+    id: "workspace",
+    label: "Workspace",
+    element: WorkspacePage,
   },
 ];

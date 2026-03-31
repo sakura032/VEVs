@@ -1,0 +1,6 @@
+{
+  "dataset_id": "basic_vesicle",
+  "label": "basic_vesicle",
+  "structure_url": "/visualization/vesicle/basic_vesicle/vesicle.gro",
+  "topology_url": "/visualization/vesicle/basic_vesicle/topol.top"
+}

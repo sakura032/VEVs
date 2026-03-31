@@ -1,0 +1,7 @@
+interface:
+  display_name: "main"
+  short_description: "vesicle 主干代码与数据链路开发"
+  default_prompt: "请使用 $main 处理当前仓库主干的 vesicle 代码、脚本、数据契约或测试改动。"
+
+policy:
+  allow_implicit_invocation: true

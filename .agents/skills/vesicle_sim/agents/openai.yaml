@@ -1,0 +1,7 @@
+interface:
+  display_name: "vesicle_sim"
+  short_description: "统一 WSL 与 miniconda 默认运行环境"
+  default_prompt: "请使用 $vesicle_sim 在默认的 WSL miniconda 环境中执行这次项目命令和验证。"
+
+policy:
+  allow_implicit_invocation: true

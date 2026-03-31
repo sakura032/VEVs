@@ -1,0 +1,7 @@
+interface:
+  display_name: "governance"
+  short_description: "仓库级架构边界与长期演进守门"
+  default_prompt: "请使用 $governance 审核这次改动是否符合当前仓库的结构边界和长期演进方向。"
+
+policy:
+  allow_implicit_invocation: true
